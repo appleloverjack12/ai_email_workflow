@@ -1,0 +1,20 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/workflow.db
+backend/uploads/
+
+# Env files
+backend/.env
+frontend/.env
+.env
+
+# Node
+frontend/node_modules/
+frontend/.next/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/

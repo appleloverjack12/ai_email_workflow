@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+pydantic[email]
+python-multipart
+openai
+python-dotenv
