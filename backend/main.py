@@ -549,13 +549,35 @@ def get_latest_extraction(message_id: int) -> dict:
             .order_by(ExtractedFields.created_at.desc())
         ).first()
 
+        audit = session.exec(
+            select(AuditLog)
+            .where(
+                AuditLog.message_id == message_id,
+                AuditLog.action.in_(["processed", "classified"])
+            )
+            .order_by(AuditLog.created_at.desc())
+        ).first()
+
+        classification_summary = None
+        if audit and audit.metadata_json:
+            try:
+                meta = json.loads(audit.metadata_json)
+                classification_summary = meta.get("classification_summary")
+            except Exception:
+                classification_summary = None
+
         if not row:
-            return {"message_id": message_id, "extracted_fields": None}
+            return {
+                "message_id": message_id,
+                "extracted_fields": None,
+                "classification_summary": classification_summary,
+            }
 
         return {
             "message_id": message_id,
             "extracted_fields_id": row.id,
             "extracted_fields": json.loads(row.json_data),
+            "classification_summary": classification_summary,
             "created_at": row.created_at,
         }
 
@@ -634,12 +656,18 @@ def run_classification(message_id: int) -> dict:
         session.commit()
 
         log_action(
-            session,
-            message_id,
-            "classified",
-            "ai",
-            metadata_json=result.model_dump_json(),
-        )
+    session,
+    message_id,
+    "classified",
+    "ai",
+    metadata_json=json.dumps(
+        {
+            "category": result.category.value,
+            "confidence": result.confidence,
+            "classification_summary": result.summary,
+        }
+    ),
+)
         return {
             "message_id": message_id,
             "category": result.category,
@@ -726,17 +754,18 @@ def process_message(message_id: int) -> dict:
         session.refresh(draft)
 
         log_action(
-            session,
-            message_id,
-            "processed",
-            "ai",
-            metadata_json=json.dumps(
-                {
-                    "category": classification.category.value,
-                    "confidence": classification.confidence,
-                }
-            ),
-        )
+    session,
+    message_id,
+    "processed",
+    "ai",
+    metadata_json=json.dumps(
+        {
+            "category": classification.category.value,
+            "confidence": classification.confidence,
+            "classification_summary": classification.summary,
+        }
+    ),
+)
 
         return {
             "message_id": message_id,

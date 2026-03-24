@@ -58,6 +58,7 @@ type LatestExtractionResponse = {
   message_id: number;
   extracted_fields_id?: number;
   extracted_fields: Record<string, unknown> | null;
+  classification_summary?: string | null;
   created_at?: string;
 };
 
@@ -290,6 +291,7 @@ export default function Page() {
 
       let extractedFields: Record<string, unknown> | undefined = undefined;
       let draftText: string | undefined = undefined;
+      let classificationSummary: string | undefined = undefined;
 
       try {
         const extractionRes = await fetch(`${API_BASE}/messages/${messageId}/latest-extraction`);
@@ -297,6 +299,9 @@ export default function Page() {
           const extractionData: LatestExtractionResponse = await extractionRes.json();
           if (extractionData.extracted_fields) {
             extractedFields = extractionData.extracted_fields;
+          }
+          if (extractionData.classification_summary) {
+            classificationSummary = extractionData.classification_summary;
           }
         }
       } catch {
@@ -314,12 +319,12 @@ export default function Page() {
         // ignore draft load failure for now
       }
 
-      if (extractedFields || draftText) {
+      if (extractedFields || draftText || classificationSummary) {
         setProcessedData({
           message_id: messageData.id,
           category: messageData.category,
           confidence: messageData.ai_confidence ?? 0,
-          classification_summary: undefined,
+          classification_summary: classificationSummary,
           extracted_fields: extractedFields,
           draft_text: draftText,
           status: messageData.status,
