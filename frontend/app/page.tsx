@@ -62,6 +62,19 @@ type LatestExtractionResponse = {
   created_at?: string;
 };
 
+type AuditLogItem = {
+  id: number;
+  action: string;
+  actor: string;
+  metadata_json?: string | null;
+  created_at: string;
+};
+
+type AuditLogsResponse = {
+  message_id: number;
+  audit_logs: AuditLogItem[];
+};
+
 type LatestDraftResponse = {
   message_id: number;
   draft_id?: number;
@@ -144,6 +157,7 @@ export default function Page() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
 
   const filteredMessages = useMemo(() => {
     return messages.filter((message) => {
@@ -279,6 +293,21 @@ export default function Page() {
       setCreating(false);
     }
   }
+  async function fetchAuditLogs(messageId: number) {
+    try {
+      const response = await fetch(`${API_BASE}/messages/${messageId}/audit-logs`);
+      if (!response.ok) throw new Error("Failed to load audit logs");
+
+      const data: AuditLogsResponse = await response.json();
+      setAuditLogs(data.audit_logs || []);
+    } catch (error) {
+      setAuditLogs([]);
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
   async function fetchMessageDetail(messageId: number) {
     setDetailLoading(true);
 
@@ -335,6 +364,7 @@ export default function Page() {
 
       setEditedDraft(draftText ?? "");
       await fetchDocuments(messageId);
+      await fetchAuditLogs(messageId);
     } catch (error) {
       setToast({
         type: "error",
@@ -631,6 +661,41 @@ export default function Page() {
           </div>
 
           <div className="space-y-6">
+            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <h3 className="text-lg font-semibold">Audit log</h3>
+
+              <div className="mt-4">
+                {auditLogs.length > 0 ? (
+                  <div className="space-y-3">
+                    {auditLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-800">{log.action}</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {log.actor} · {formatDate(log.created_at)}
+                            </p>
+                          </div>
+                        </div>
+
+                        {log.metadata_json && (
+                          <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                            {log.metadata_json}
+                          </pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    No audit log entries for this message yet.
+                  </div>
+                )}
+              </div>
+            </div>
             <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
               <h3 className="text-lg font-semibold">Documents</h3>
 

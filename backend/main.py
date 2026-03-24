@@ -510,6 +510,31 @@ def list_message_documents(message_id: int) -> dict:
             ],
         }
 
+@app.get("/messages/{message_id}/audit-logs")
+def get_message_audit_logs(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        get_message_or_404(session, message_id)
+
+        logs = session.exec(
+            select(AuditLog)
+            .where(AuditLog.message_id == message_id)
+            .order_by(AuditLog.created_at.desc())
+        ).all()
+
+        return {
+            "message_id": message_id,
+            "audit_logs": [
+                {
+                    "id": log.id,
+                    "action": log.action,
+                    "actor": log.actor,
+                    "metadata_json": log.metadata_json,
+                    "created_at": log.created_at,
+                }
+                for log in logs
+            ],
+        }
+
 @app.post("/messages", response_model=MessageRead)
 def create_message(payload: MessageCreate) -> Message:
     with Session(engine, expire_on_commit=False) as session:
