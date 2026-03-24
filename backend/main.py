@@ -11,7 +11,8 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, EmailStr
 from sqlmodel import Field, Session, SQLModel, create_engine, select
-
+from io import BytesIO
+from pypdf import PdfReader
 
 load_dotenv()
 
@@ -168,6 +169,14 @@ class ExtractionOutput(BaseModel):
     location: Optional[str] = None
     urgency: Optional[str] = None
     interest_level: Optional[str] = None
+
+    website_url: Optional[str] = None
+    pages_needed: Optional[list[str]] = None
+    design_preferences: Optional[str] = None
+    business_goals: Optional[list[str]] = None
+    preferred_next_step: Optional[str] = None
+    additional_notes: Optional[str] = None
+
     summary: str
 
 
@@ -176,8 +185,53 @@ class DraftOutput(BaseModel):
 
 
 # --- Prompt text ---
+DRAFT_SYSTEM_PROMPT = """
+You draft concise, professional small-business email replies.
+
+Rules:
+- Use the extracted fields and attached-document details if available.
+- If the project brief or attachment is already present in the context, do NOT ask the sender to send it again.
+- Mention useful known details like requested service, budget, timeline, or project scope when available.
+- Ask only for genuinely missing information.
+- Do not invent promises, prices, or timelines.
+- Keep the draft under 180 words.
+- Do not include a fake signature name.
+"""
+
+EXTRACTION_SYSTEM_PROMPT = """
+You extract structured business information from an inbound email and any attached-document text.
+
+Important rules:
+- For quote requests, project briefs, proposals, scopes, requirements, and attached PDFs, treat the attached-document text as the primary source of truth.
+- The email body may be short; do not ignore rich details that appear only in the attached document.
+- Extract concrete details from the document whenever present.
+- Use null only when the information is truly missing.
+- Keep summary concise and factual.
+
+Always look for:
+- sender_name
+- company_name
+- email
+- phone
+- requested_service
+- budget
+- timeline
+- location
+- urgency
+- interest_level
+- website_url
+- pages_needed
+- design_preferences
+- business_goals
+- preferred_next_step
+- additional_notes
+- summary
+
+For pages_needed and business_goals, return a list when clearly stated.
+"""
+
 CLASSIFICATION_SYSTEM_PROMPT = """
-You classify inbound small-business emails.
+You classify inbound small-business emails using both the email body and any attached-document text.
 
 Allowed categories:
 - lead
@@ -188,36 +242,16 @@ Allowed categories:
 - spam
 - other
 
+Rules:
+- If the email references an attached brief, proposal, scope, requirements, invoice, or similar document, use the attached-document text to determine the category.
+- If the message is clearly a request for pricing, quote, estimate, or project discussion, prefer quote_request or lead over other/spam.
+- Do not classify as spam if the attached-document text contains a clear business request.
+
 Return:
 - category
 - confidence: a float from 0.0 to 1.0
 - summary: a short one-sentence explanation
-
-Choose the single best category.
 """
-
-EXTRACTION_SYSTEM_PROMPT = """
-You extract structured business information from an inbound email and any attached-document text.
-
-Rules:
-- Only extract what is actually present or strongly implied.
-- Use null for unknown fields.
-- Keep summary concise and factual.
-- Budget and timeline may be free-form strings.
-"""
-
-DRAFT_SYSTEM_PROMPT = """
-You draft concise, professional small-business email replies.
-
-Rules:
-- Be polite and practical.
-- Do not invent promises, prices, or timelines.
-- Ask for missing info only when useful.
-- Keep the draft under 180 words.
-- Do not include a fake signature name.
-"""
-
-
 # --- Helpers ---
 def get_openai_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -247,38 +281,74 @@ def clamp_confidence(value: float) -> float:
 def extract_text_from_upload(filename: str, raw_bytes: bytes) -> Optional[str]:
     ext = Path(filename).suffix.lower()
     text_like = {".txt", ".md", ".csv", ".json", ".log"}
+
     if ext in text_like:
         try:
             return raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
             return raw_bytes.decode("utf-8", errors="ignore")
+
+    if ext == ".pdf":
+        try:
+            reader = PdfReader(BytesIO(raw_bytes))
+            parts: list[str] = []
+
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    parts.append(text)
+
+            extracted = "\n\n".join(parts).strip()
+            return extracted or None
+        except Exception:
+            return None
+
     return None
 
 
 def build_message_context(session: Session, message: Message) -> str:
     docs = session.exec(
-        select(Document).where(Document.message_id == message.id).order_by(Document.created_at.asc())
+        select(Document)
+        .where(Document.message_id == message.id)
+        .order_by(Document.created_at.asc())
     ).all()
 
     parts = [
+        "INBOUND EMAIL",
         f"Subject: {message.subject}",
         f"Sender name: {message.sender_name or ''}",
         f"Sender email: {message.sender_email}",
         "",
-        "Email body:",
+        "EMAIL BODY:",
         message.body_text,
+        "",
+        f"ATTACHMENT COUNT: {len(docs)}",
     ]
 
-    if docs:
-        parts.append("")
-        parts.append("Attached documents:")
-        for doc in docs:
-            parts.append(f"- Filename: {doc.filename}")
-            if doc.extracted_text:
-                parts.append("  Extracted text:")
-                parts.append(doc.extracted_text[:8000])
+    for i, doc in enumerate(docs, start=1):
+        extracted = (doc.extracted_text or "").strip()
+        parts.extend(
+            [
+                "",
+                f"ATTACHMENT {i}",
+                f"Filename: {doc.filename}",
+                f"File type: {doc.file_type or 'unknown'}",
+                "ATTACHED DOCUMENT TEXT:",
+                extracted if extracted else "[NO EXTRACTED TEXT AVAILABLE]",
+            ]
+        )
 
-    return "\n".join(parts)
+    context = "\n".join(parts)
+
+    print(f"[CONTEXT DEBUG] message_id={message.id} docs={len(docs)}")
+    for doc in docs:
+        print(
+            f"[CONTEXT DEBUG] doc={doc.filename} "
+            f"extracted_len={len(doc.extracted_text) if doc.extracted_text else 0}"
+        )
+    print(f"[CONTEXT DEBUG] preview:\n{context[:3000]}")
+
+    return context
 
 
 def log_action(
@@ -321,6 +391,7 @@ def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
 
 def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutput:
     client = get_openai_client()
+
     response = client.responses.parse(
         model=get_model_name(),
         reasoning={"effort": "none"},
@@ -330,15 +401,22 @@ def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutp
                 "role": "user",
                 "content": (
                     f"Category: {category.value}\n\n"
-                    f"Extract the useful business fields from this message and any document text.\n\n{context}"
+                    "Extract structured business fields from the message below.\n\n"
+                    "IMPORTANT:\n"
+                    "- If ATTACHED DOCUMENT TEXT contains useful details, use it.\n"
+                    "- Do NOT say the brief or attachment was missing if ATTACHED DOCUMENT TEXT is present.\n"
+                    "- Prefer concrete details from ATTACHED DOCUMENT TEXT over vague email wording.\n\n"
+                    f"{context}"
                 ),
             },
         ],
         text_format=ExtractionOutput,
     )
+
     parsed = response.output_parsed
     if parsed is None:
         raise HTTPException(status_code=500, detail="AI extraction returned no structured output.")
+
     return parsed
 
 
@@ -349,6 +427,7 @@ def ai_draft_reply(
     context: str,
 ) -> DraftOutput:
     client = get_openai_client()
+
     response = client.responses.parse(
         model=get_model_name(),
         reasoning={"effort": "none"},
@@ -358,18 +437,24 @@ def ai_draft_reply(
                 "role": "user",
                 "content": (
                     f"Category: {category.value}\n"
-                    f"Sender name: {sender_name or 'there'}\n"
+                    f"Sender name: {sender_name or 'there'}\n\n"
+                    "IMPORTANT:\n"
+                    "- If ATTACHED DOCUMENT TEXT is present in the context, assume the attachment was received.\n"
+                    "- Do NOT ask the sender to resend the brief or attachment if its contents are already present.\n"
+                    "- Use concrete details from the attached document when drafting.\n\n"
                     f"Extracted fields JSON:\n{extracted.model_dump_json(indent=2)}\n\n"
-                    f"Original context:\n{context}\n\n"
+                    f"{context}\n\n"
                     "Write the best reply draft."
                 ),
             },
         ],
         text_format=DraftOutput,
     )
+
     parsed = response.output_parsed
     if parsed is None:
         raise HTTPException(status_code=500, detail="AI drafting returned no structured output.")
+
     return parsed
 
 
@@ -400,6 +485,30 @@ def ensure_message_classified(session: Session, message: Message) -> Message:
 def health() -> dict:
     return {"ok": True}
 
+@app.get("/messages/{message_id}/documents")
+def list_message_documents(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        get_message_or_404(session, message_id)
+
+        docs = session.exec(
+            select(Document)
+            .where(Document.message_id == message_id)
+            .order_by(Document.created_at.desc())
+        ).all()
+
+        return {
+            "message_id": message_id,
+            "documents": [
+                {
+                    "id": doc.id,
+                    "filename": doc.filename,
+                    "file_type": doc.file_type,
+                    "storage_path": doc.storage_path,
+                    "created_at": doc.created_at,
+                }
+                for doc in docs
+            ],
+        }
 
 @app.post("/messages", response_model=MessageRead)
 def create_message(payload: MessageCreate) -> Message:
@@ -488,6 +597,7 @@ def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
         raw_bytes = file.file.read()
         stored_path.write_bytes(raw_bytes)
         extracted_text = extract_text_from_upload(safe_name, raw_bytes)
+        print(f"[UPLOAD DEBUG] {safe_name} extracted_text_length = {len(extracted_text) if extracted_text else 0}")
 
         doc = Document(
             message_id=message_id,
@@ -544,7 +654,8 @@ def run_extraction(message_id: int) -> dict:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
         context = build_message_context(session, message)
-
+        print(f"[PROCESS DEBUG] message_id={message_id}")
+        print(f"[PROCESS DEBUG] context preview:\n{context[:2000]}")
         extracted = ai_extract_fields(message.category, context)
         row = ExtractedFields(message_id=message_id, json_data=extracted.model_dump_json())
         session.add(row)
@@ -565,8 +676,6 @@ def run_extraction(message_id: int) -> dict:
             "extracted_fields_id": row.id,
             "json_data": json.loads(row.json_data),
         }
-
-
 @app.post("/messages/{message_id}/draft-reply")
 def generate_draft(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -712,7 +821,32 @@ def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
         session.commit()
         log_action(session, message_id, "rejected", payload.actor_name)
         return {"message_id": message_id, "status": message.status}
+@app.get("/messages/{message_id}/debug-context")
+def debug_message_context(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        context = build_message_context(session, message)
 
+        docs = session.exec(
+            select(Document)
+            .where(Document.message_id == message_id)
+            .order_by(Document.created_at.desc())
+        ).all()
+
+        return {
+            "message_id": message_id,
+            "document_count": len(docs),
+            "documents": [
+                {
+                    "id": doc.id,
+                    "filename": doc.filename,
+                    "has_extracted_text": bool(doc.extracted_text),
+                    "extracted_text_length": len(doc.extracted_text) if doc.extracted_text else 0,
+                }
+                for doc in docs
+            ],
+            "context_preview": context[:4000],
+        }
 
 @app.post("/messages/{message_id}/send")
 def send_message(message_id: int, payload: ApprovalRequest) -> dict:
@@ -735,3 +869,4 @@ def send_message(message_id: int, payload: ApprovalRequest) -> dict:
             "status": message.status,
             "note": "Stub send endpoint succeeded",
         }
+        

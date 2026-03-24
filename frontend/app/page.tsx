@@ -19,7 +19,18 @@ type MessageStatus =
   | "sent"
   | "rejected"
   | "error";
+type UploadedDocument = {
+  id: number;
+  filename: string;
+  file_type?: string | null;
+  storage_path?: string | null;
+  created_at: string;
+};
 
+type DocumentsResponse = {
+  message_id: number;
+  documents: UploadedDocument[];
+};
 type Message = {
   id: number;
   subject: string;
@@ -130,6 +141,8 @@ export default function Page() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | MessageStatus>("all");
   const [toast, setToast] = useState<Toast | null>(null);
+  const [documents, setDocuments] = useState<UploadedDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const filteredMessages = useMemo(() => {
     return messages.filter((message) => {
@@ -153,7 +166,13 @@ export default function Page() {
       sent: messages.filter((m) => m.status === "sent").length,
     };
   }, [messages]);
-
+  const [createForm, setCreateForm] = useState({
+    subject: "",
+    sender_email: "",
+    sender_name: "",
+    body_text: "",
+  });
+  const [creating, setCreating] = useState(false);
   async function fetchMessages() {
     setLoading(true);
     try {
@@ -174,69 +193,167 @@ export default function Page() {
       setLoading(false);
     }
   }
-
-async function fetchMessageDetail(messageId: number) {
-  setDetailLoading(true);
-
-  try {
-    const messageRes = await fetch(`${API_BASE}/messages/${messageId}`);
-    if (!messageRes.ok) throw new Error("Failed to load message details");
-
-    const messageData: Message = await messageRes.json();
-    setSelectedMessage(messageData);
-
-    let extractedFields: Record<string, unknown> | undefined = undefined;
-    let draftText: string | undefined = undefined;
-
-    try {
-      const extractionRes = await fetch(`${API_BASE}/messages/${messageId}/latest-extraction`);
-      if (extractionRes.ok) {
-        const extractionData: LatestExtractionResponse = await extractionRes.json();
-        if (extractionData.extracted_fields) {
-          extractedFields = extractionData.extracted_fields;
-        }
-      }
-    } catch {
-      // ignore extraction load failure for now
-    }
-
-    try {
-      const draftRes = await fetch(`${API_BASE}/messages/${messageId}/latest-draft`);
-      if (draftRes.ok) {
-        const draftData: LatestDraftResponse = await draftRes.json();
-        if (draftData.draft_text) {
-          draftText = draftData.draft_text;
-        }
-      }
-    } catch {
-      // ignore draft load failure for now
-    }
-
-    if (extractedFields || draftText) {
-      setProcessedData({
-        message_id: messageData.id,
-        category: messageData.category,
-        confidence: messageData.ai_confidence ?? 0,
-        classification_summary: undefined,
-        extracted_fields: extractedFields,
-        draft_text: draftText,
-        status: messageData.status,
+  async function uploadDocument(file: File) {
+    if (!selectedMessage) {
+      setToast({
+        type: "error",
+        message: "Select a message first.",
       });
-    } else {
-      setProcessedData(null);
+      return;
     }
 
-    setEditedDraft(draftText ?? "");
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setDetailLoading(false);
-  }
-}
+    setUploading(true);
 
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/documents`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to upload document");
+
+      await fetchDocuments(selectedMessage.id);
+      setToast({ type: "success", message: `Uploaded ${data.filename}.` });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
+  async function createMessage() {
+    if (
+      !createForm.subject.trim() ||
+      !createForm.sender_email.trim() ||
+      !createForm.body_text.trim()
+    ) {
+      setToast({
+        type: "error",
+        message: "Subject, sender email, and email body are required.",
+      });
+      return;
+    }
+
+    setCreating(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(createForm),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to create message");
+
+      const createdMessage = data as Message;
+
+      await fetchMessages();
+      setSelectedId(createdMessage.id);
+      setSelectedMessage(createdMessage);
+      setProcessedData(null);
+      setEditedDraft("");
+      await fetchDocuments(createdMessage.id);
+
+      setCreateForm({
+        subject: "",
+        sender_email: "",
+        sender_name: "",
+        body_text: "",
+      });
+
+      setToast({ type: "success", message: "Message created." });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setCreating(false);
+    }
+  }
+  async function fetchMessageDetail(messageId: number) {
+    setDetailLoading(true);
+
+    try {
+      const messageRes = await fetch(`${API_BASE}/messages/${messageId}`);
+      if (!messageRes.ok) throw new Error("Failed to load message details");
+
+      const messageData: Message = await messageRes.json();
+      setSelectedMessage(messageData);
+
+      let extractedFields: Record<string, unknown> | undefined = undefined;
+      let draftText: string | undefined = undefined;
+
+      try {
+        const extractionRes = await fetch(`${API_BASE}/messages/${messageId}/latest-extraction`);
+        if (extractionRes.ok) {
+          const extractionData: LatestExtractionResponse = await extractionRes.json();
+          if (extractionData.extracted_fields) {
+            extractedFields = extractionData.extracted_fields;
+          }
+        }
+      } catch {
+      }
+
+      try {
+        const draftRes = await fetch(`${API_BASE}/messages/${messageId}/latest-draft`);
+        if (draftRes.ok) {
+          const draftData: LatestDraftResponse = await draftRes.json();
+          if (draftData.draft_text) {
+            draftText = draftData.draft_text;
+          }
+        }
+      } catch {
+        // ignore draft load failure for now
+      }
+
+      if (extractedFields || draftText) {
+        setProcessedData({
+          message_id: messageData.id,
+          category: messageData.category,
+          confidence: messageData.ai_confidence ?? 0,
+          classification_summary: undefined,
+          extracted_fields: extractedFields,
+          draft_text: draftText,
+          status: messageData.status,
+        });
+      } else {
+        setProcessedData(null);
+      }
+
+      setEditedDraft(draftText ?? "");
+      await fetchDocuments(messageId);
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+  async function fetchDocuments(messageId: number) {
+    try {
+      const response = await fetch(`${API_BASE}/messages/${messageId}/documents`);
+      if (!response.ok) throw new Error("Failed to load documents");
+
+      const data: DocumentsResponse = await response.json();
+      setDocuments(data.documents || []);
+    } catch (error) {
+      setDocuments([]);
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
   async function approveSelectedMessage() {
     if (!selectedMessage) return;
     setActionLoading("approve");
@@ -363,6 +480,21 @@ async function fetchMessageDetail(messageId: number) {
       setActionLoading(null);
     }
   }
+  useEffect(() => {
+    fetchMessages();
+  }, []);
+
+  useEffect(() => {
+    if (selectedId !== null) {
+      fetchMessageDetail(selectedId);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
@@ -392,7 +524,6 @@ async function fetchMessageDetail(messageId: number) {
             </button>
           </div>
         </div>
-
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
             <p className="text-sm text-slate-500">Total messages</p>
@@ -495,6 +626,118 @@ async function fetchMessageDetail(messageId: number) {
           </div>
 
           <div className="space-y-6">
+            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <h3 className="text-lg font-semibold">Documents</h3>
+
+              <div className="mt-4 space-y-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <input
+                    type="file"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        uploadDocument(file);
+                      }
+                      e.target.value = "";
+                    }}
+                    disabled={!selectedMessage || uploading}
+                    className="block w-full text-sm text-slate-600"
+                  />
+
+                  <span className="text-xs text-slate-500">
+                    {uploading ? "Uploading..." : "Upload a .txt, .md, .csv, or similar text file"}
+                  </span>
+                </div>
+
+                {documents.length > 0 ? (
+                  <div className="space-y-2">
+                    {documents.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-3"
+                      >
+                        <p className="text-sm font-medium text-slate-800">{doc.filename}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {doc.file_type || "unknown type"} · uploaded {formatDate(doc.created_at)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    No documents uploaded for this message yet.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <div className="mb-4">
+                <h2 className="text-xl font-semibold">Create message</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Paste an inbound email directly into the app.
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Subject</label>
+                  <input
+                    value={createForm.subject}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setCreateForm((prev) => ({ ...prev, subject: e.target.value }))
+                    }
+                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    placeholder="Need a quote for website redesign"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Sender email</label>
+                  <input
+                    value={createForm.sender_email}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setCreateForm((prev) => ({ ...prev, sender_email: e.target.value }))
+                    }
+                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    placeholder="client@example.com"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Sender name</label>
+                  <input
+                    value={createForm.sender_name}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setCreateForm((prev) => ({ ...prev, sender_name: e.target.value }))
+                    }
+                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    placeholder="John"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Email body</label>
+                  <textarea
+                    value={createForm.body_text}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                      setCreateForm((prev) => ({ ...prev, body_text: e.target.value }))
+                    }
+                    className="min-h-[140px] w-full rounded-2xl border border-slate-300 p-3 text-sm outline-none focus:border-slate-500"
+                    placeholder="Hi, I need a quote for redesigning my company website..."
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={createMessage}
+                  disabled={creating}
+                  className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {creating ? "Creating..." : "Create message"}
+                </button>
+              </div>
+            </div>
             <div className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
               <div className="border-b border-slate-200 p-5">
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">

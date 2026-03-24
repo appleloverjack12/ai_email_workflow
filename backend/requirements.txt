@@ -5,3 +5,4 @@ pydantic[email]
 python-multipart
 openai
 python-dotenv
+pypdf
