@@ -164,6 +164,7 @@ class ExtractionOutput(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     requested_service: Optional[str] = None
+    project_type: Optional[str] = None
     budget: Optional[str] = None
     timeline: Optional[str] = None
     location: Optional[str] = None
@@ -176,6 +177,7 @@ class ExtractionOutput(BaseModel):
     business_goals: Optional[list[str]] = None
     preferred_next_step: Optional[str] = None
     additional_notes: Optional[str] = None
+    missing_information: Optional[list[str]] = None
 
     summary: str
 
@@ -189,9 +191,9 @@ DRAFT_SYSTEM_PROMPT = """
 You draft concise, professional small-business email replies.
 
 Rules:
-- Use the extracted fields and attached-document details if available.
-- If the project brief or attachment is already present in the context, do NOT ask the sender to send it again.
-- Mention useful known details like requested service, budget, timeline, or project scope when available.
+- Use extracted fields and attached-document details if available.
+- If attached-document text is present, do NOT ask the sender to resend the brief or attachment.
+- For quote requests, acknowledge the project clearly and mention concrete details when available, such as service requested, budget, or timeline.
 - Ask only for genuinely missing information.
 - Do not invent promises, prices, or timelines.
 - Keep the draft under 180 words.
@@ -201,11 +203,14 @@ Rules:
 EXTRACTION_SYSTEM_PROMPT = """
 You extract structured business information from an inbound email and any attached-document text.
 
+The system is optimized for small-business and agency quote requests.
+
 Important rules:
-- For quote requests, project briefs, proposals, scopes, requirements, and attached PDFs, treat the attached-document text as the primary source of truth.
-- The email body may be short; do not ignore rich details that appear only in the attached document.
-- Extract concrete details from the document whenever present.
+- If the email references an attachment, brief, proposal, scope, requirements, or PDF, treat the attached-document text as a primary source.
+- For quote requests and project briefs, prefer concrete details found in the attached document over vague wording in the email.
+- Extract details from both the email body and the attached document text.
 - Use null only when the information is truly missing.
+- Use lists for pages_needed, business_goals, and missing_information when appropriate.
 - Keep summary concise and factual.
 
 Always look for:
@@ -214,6 +219,7 @@ Always look for:
 - email
 - phone
 - requested_service
+- project_type
 - budget
 - timeline
 - location
@@ -225,9 +231,15 @@ Always look for:
 - business_goals
 - preferred_next_step
 - additional_notes
+- missing_information
 - summary
 
-For pages_needed and business_goals, return a list when clearly stated.
+For quote/project briefs:
+- requested_service should capture the main service requested, such as website redesign.
+- project_type should be a short label such as website redesign, landing page build, ecommerce redesign, branding, etc.
+- pages_needed should list named pages if present.
+- business_goals should list concrete goals if present.
+- missing_information should include only the important details still needed in order to prepare a quote.
 """
 
 CLASSIFICATION_SYSTEM_PROMPT = """
@@ -243,9 +255,10 @@ Allowed categories:
 - other
 
 Rules:
-- If the email references an attached brief, proposal, scope, requirements, invoice, or similar document, use the attached-document text to determine the category.
-- If the message is clearly a request for pricing, quote, estimate, or project discussion, prefer quote_request or lead over other/spam.
-- Do not classify as spam if the attached-document text contains a clear business request.
+- If the email or attached document clearly requests a quote, estimate, pricing, project discussion, redesign, proposal, or service inquiry, prefer quote_request.
+- If the message is a broader business opportunity or recruiting/business lead without a direct quote request, prefer lead.
+- Do not classify as spam if attached-document text contains a clear business request.
+- Use the attached-document text when the email body is short or vague.
 
 Return:
 - category
@@ -401,11 +414,11 @@ def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutp
                 "role": "user",
                 "content": (
                     f"Category: {category.value}\n\n"
-                    "Extract structured business fields from the message below.\n\n"
+                    "Extract structured business fields from the inbound message below.\n\n"
                     "IMPORTANT:\n"
-                    "- If ATTACHED DOCUMENT TEXT contains useful details, use it.\n"
-                    "- Do NOT say the brief or attachment was missing if ATTACHED DOCUMENT TEXT is present.\n"
-                    "- Prefer concrete details from ATTACHED DOCUMENT TEXT over vague email wording.\n\n"
+                    "- If ATTACHED DOCUMENT TEXT is present, use it as a primary source.\n"
+                    "- For quote requests, pull as many concrete project details as possible from the attached document.\n"
+                    "- Do NOT say the brief is missing if attached-document text is already present.\n\n"
                     f"{context}"
                 ),
             },
@@ -439,9 +452,10 @@ def ai_draft_reply(
                     f"Category: {category.value}\n"
                     f"Sender name: {sender_name or 'there'}\n\n"
                     "IMPORTANT:\n"
-                    "- If ATTACHED DOCUMENT TEXT is present in the context, assume the attachment was received.\n"
-                    "- Do NOT ask the sender to resend the brief or attachment if its contents are already present.\n"
-                    "- Use concrete details from the attached document when drafting.\n\n"
+                    "- If ATTACHED DOCUMENT TEXT exists, assume the brief was received.\n"
+                    "- Do NOT ask the sender to resend an attachment if its contents are already present.\n"
+                    "- For quote requests, mention known details like service, budget, timeline, website URL, or scope when available.\n"
+                    "- Use missing_information only if those details are actually missing.\n\n"
                     f"Extracted fields JSON:\n{extracted.model_dump_json(indent=2)}\n\n"
                     f"{context}\n\n"
                     "Write the best reply draft."
@@ -456,7 +470,6 @@ def ai_draft_reply(
         raise HTTPException(status_code=500, detail="AI drafting returned no structured output.")
 
     return parsed
-
 
 def ensure_message_classified(session: Session, message: Message) -> Message:
     if message.ai_confidence is not None and message.category != MessageCategory.other:
