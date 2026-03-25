@@ -265,6 +265,19 @@ Return:
 - confidence: a float from 0.0 to 1.0
 - summary: a short one-sentence explanation
 """
+MISSING_INFO_DRAFT_SYSTEM_PROMPT = """
+You draft concise, professional follow-up emails for quote requests when key information is still missing.
+
+Rules:
+- Use the extracted fields and attached-document details if available.
+- Acknowledge that the brief or attachment was reviewed if present.
+- Clearly list only the missing details needed to prepare a quote.
+- Be polite and practical.
+- Do not ask for information that is already present.
+- Do not invent prices, timelines, or promises.
+- Keep the draft under 180 words.
+- Do not include a fake signature name.
+"""
 # --- Helpers ---
 def get_openai_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -471,6 +484,43 @@ def ai_draft_reply(
 
     return parsed
 
+def ai_draft_missing_info(
+    category: MessageCategory,
+    sender_name: Optional[str],
+    extracted: ExtractionOutput,
+    context: str,
+) -> DraftOutput:
+    client = get_openai_client()
+
+    response = client.responses.parse(
+        model=get_model_name(),
+        reasoning={"effort": "none"},
+        input=[
+            {"role": "system", "content": MISSING_INFO_DRAFT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Category: {category.value}\n"
+                    f"Sender name: {sender_name or 'there'}\n\n"
+                    "IMPORTANT:\n"
+                    "- Only ask for the items listed in missing_information.\n"
+                    "- If missing_information is empty, write a short reply saying the request looks complete enough to review for a quote.\n"
+                    "- If ATTACHED DOCUMENT TEXT exists, assume the attachment was received and reviewed.\n\n"
+                    f"Extracted fields JSON:\n{extracted.model_dump_json(indent=2)}\n\n"
+                    f"{context}\n\n"
+                    "Write the best follow-up email requesting missing information."
+                ),
+            },
+        ],
+        text_format=DraftOutput,
+    )
+
+    parsed = response.output_parsed
+    if parsed is None:
+        raise HTTPException(status_code=500, detail="AI missing-info drafting returned no structured output.")
+
+    return parsed
+
 def ensure_message_classified(session: Session, message: Message) -> Message:
     if message.ai_confidence is not None and message.category != MessageCategory.other:
         return message
@@ -548,6 +598,43 @@ def get_message_audit_logs(message_id: int) -> dict:
             ],
         }
 
+@app.post("/messages/{message_id}/draft-missing-info")
+def generate_missing_info_draft(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        message = ensure_message_classified(session, message)
+        context = build_message_context(session, message)
+        extracted = ai_extract_fields(message.category, context)
+        draft_output = ai_draft_missing_info(message.category, message.sender_name, extracted, context)
+
+        draft = Draft(message_id=message_id, draft_text=draft_output.reply_text)
+        message.status = MessageStatus.needs_review
+        message.updated_at = datetime.utcnow()
+
+        session.add(draft)
+        session.add(message)
+        session.commit()
+        session.refresh(draft)
+
+        log_action(
+            session,
+            message_id,
+            "missing_info_draft_created",
+            "ai",
+            metadata_json=json.dumps(
+                {
+                    "missing_information": extracted.missing_information,
+                }
+            ),
+        )
+
+        return {
+            "message_id": message_id,
+            "draft_id": draft.id,
+            "draft_text": draft.draft_text,
+            "missing_information": extracted.missing_information,
+            "status": message.status,
+        }
 @app.post("/messages", response_model=MessageRead)
 def create_message(payload: MessageCreate) -> Message:
     with Session(engine, expire_on_commit=False) as session:

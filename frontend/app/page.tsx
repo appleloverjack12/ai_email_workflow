@@ -293,6 +293,31 @@ export default function Page() {
       setCreating(false);
     }
   }
+  async function requestMissingInfoDraft() {
+    if (!selectedMessage) return;
+    setActionLoading("missing-info");
+
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/draft-missing-info`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to generate missing-info draft");
+
+      setEditedDraft(data.draft_text || "");
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+      setToast({ type: "success", message: "Missing-info draft generated." });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
   async function fetchAuditLogs(messageId: number) {
     try {
       const response = await fetch(`${API_BASE}/messages/${messageId}/audit-logs`);
@@ -530,65 +555,241 @@ export default function Page() {
     const timer = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(timer);
   }, [toast]);
+  const quoteFields = processedData?.extracted_fields ?? {};
 
+  const quoteSummary = {
+    requested_service: quoteFields["requested_service"],
+    project_type: quoteFields["project_type"],
+    company_name: quoteFields["company_name"],
+    website_url: quoteFields["website_url"],
+    budget: quoteFields["budget"],
+    timeline: quoteFields["timeline"],
+    location: quoteFields["location"],
+    pages_needed: quoteFields["pages_needed"],
+    business_goals: quoteFields["business_goals"],
+    missing_information: quoteFields["missing_information"],
+  };
+  function renderFieldValue(value: unknown) {
+    if (value === null || value === undefined || value === "") return "—";
+    if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "—";
+    return String(value);
+  }
+  const missingInfoItems = Array.isArray(quoteSummary.missing_information)
+    ? quoteSummary.missing_information
+    : [];
+
+  const workflowRecommendation = useMemo(() => {
+    if (!selectedMessage) {
+      return {
+        tone: "slate",
+        title: "No message selected",
+        description: "Select a message from the inbox to see the next recommended step.",
+        action: null as null | "process" | "missing-info" | "approve" | "send",
+        actionLabel: "",
+      };
+    }
+
+    if (selectedMessage.status === "sent") {
+      return {
+        tone: "emerald",
+        title: "Completed",
+        description: "This message has already been sent. No further action is needed.",
+        action: null as null | "process" | "missing-info" | "approve" | "send",
+        actionLabel: "",
+      };
+    }
+
+    if (selectedMessage.status === "approved") {
+      return {
+        tone: "violet",
+        title: "Ready to send",
+        description: "The draft has already been approved and is ready to be sent.",
+        action: "send" as const,
+        actionLabel: "Send now",
+      };
+    }
+
+    if (!processedData) {
+      return {
+        tone: "blue",
+        title: "Process this request",
+        description: "Run AI processing first to extract structured details and generate a draft reply.",
+        action: "process" as const,
+        actionLabel: "Process with AI",
+      };
+    }
+
+    if (missingInfoItems.length > 0) {
+      return {
+        tone: "amber",
+        title: "Needs more info",
+        description: `This request is missing ${missingInfoItems.length} important detail${missingInfoItems.length === 1 ? "" : "s"
+          }. Generate a follow-up asking only for what is missing.`,
+        action: "missing-info" as const,
+        actionLabel: "Request missing info",
+      };
+    }
+
+    return {
+      tone: "emerald",
+      title: "Ready to quote",
+      description: "This request looks complete enough to review, refine, and approve a quote-oriented reply.",
+      action: "approve" as const,
+      actionLabel: "Approve draft",
+    };
+  }, [selectedMessage, processedData, missingInfoItems.length]);
+  const recommendationStyles: Record<string, string> = {
+    slate: "border-slate-200 bg-slate-50 text-slate-800",
+    blue: "border-blue-200 bg-blue-50 text-blue-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
+    violet: "border-violet-200 bg-violet-50 text-violet-900",
+  };
   return (
-    <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
+    <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white p-6 text-slate-900">
       <div className="mx-auto max-w-7xl space-y-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight">AI Email Workflow Dashboard</h1>
+        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur">
+          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 px-6 py-8 text-white">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
+                  AI Workflow
+                </p>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+                  Email + Document Review Dashboard
+                </h1>
+                <p className="mt-2 max-w-2xl text-sm text-slate-200">
+                  Review inbound requests, extract structured project details, generate AI drafts,
+                  and keep a full human-approved workflow trail.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={fetchMessages}
+                  disabled={loading}
+                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/15 disabled:opacity-50"
+                >
+                  {loading ? "Refreshing..." : "Refresh inbox"}
+                </button>
+                <button
+                  onClick={processSelectedMessage}
+                  disabled={!selectedMessage || actionLoading !== null}
+                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Process with AI
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total messages</p>
+              <p className="mt-2 text-3xl font-semibold">{stats.total}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Needs review</p>
+              <p className="mt-2 text-3xl font-semibold">{stats.review}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Approved</p>
+              <p className="mt-2 text-3xl font-semibold">{stats.approved}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Sent</p>
+              <p className="mt-2 text-3xl font-semibold">{stats.sent}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold">Create message</h2>
             <p className="mt-1 text-sm text-slate-600">
-              Review inbound emails, inspect extracted data, and approve drafts before sending.
+              Paste an inbound email to simulate a new request entering the workflow.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Subject</label>
+              <input
+                value={createForm.subject}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setCreateForm((prev) => ({ ...prev, subject: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder="Need a quote for website redesign"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Sender email</label>
+              <input
+                value={createForm.sender_email}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setCreateForm((prev) => ({ ...prev, sender_email: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder="client@example.com"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-sm font-medium text-slate-700">Sender name</label>
+              <input
+                value={createForm.sender_name}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setCreateForm((prev) => ({ ...prev, sender_name: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder="John"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-sm font-medium text-slate-700">Email body</label>
+              <textarea
+                value={createForm.body_text}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                  setCreateForm((prev) => ({ ...prev, body_text: e.target.value }))
+                }
+                className="min-h-[140px] w-full rounded-2xl border border-slate-300 bg-white p-3 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder="Hi, please see the attached brief for our website redesign project..."
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 flex justify-end">
             <button
-              onClick={fetchMessages}
-              disabled={loading}
-              className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium shadow-sm hover:bg-slate-50 disabled:opacity-50"
+              onClick={createMessage}
+              disabled={creating}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
             >
-              {loading ? "Refreshing..." : "Refresh"}
+              {creating ? "Creating..." : "Create message"}
             </button>
-            <button
-              onClick={processSelectedMessage}
-              disabled={!selectedMessage || actionLoading !== null}
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
-            >
-              Process with AI
-            </button>
-          </div>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm text-slate-500">Total messages</p>
-            <p className="mt-2 text-3xl font-semibold">{stats.total}</p>
-          </div>
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm text-slate-500">Needs review</p>
-            <p className="mt-2 text-3xl font-semibold">{stats.review}</p>
-          </div>
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm text-slate-500">Approved</p>
-            <p className="mt-2 text-3xl font-semibold">{stats.approved}</p>
-          </div>
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm text-slate-500">Sent</p>
-            <p className="mt-2 text-3xl font-semibold">{stats.sent}</p>
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
-          <div className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-5">
-              <h2 className="text-lg font-semibold">Inbox</h2>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold">Inbox</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Select a message to review its details and workflow history.
+                  </p>
+                </div>
+              </div>
 
               <div className="mt-4 flex gap-2">
                 <input
                   value={search}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
                   placeholder="Search subject or sender"
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-500"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                 />
 
                 <select
@@ -596,7 +797,7 @@ export default function Page() {
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
                     setStatusFilter(e.target.value as "all" | MessageStatus)
                   }
-                  className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-500"
+                  className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                 >
                   <option value="all">All</option>
                   <option value="new">New</option>
@@ -608,7 +809,7 @@ export default function Page() {
               </div>
             </div>
 
-            <div className="h-[640px] space-y-2 overflow-y-auto p-3">
+            <div className="h-[760px] space-y-3 overflow-y-auto p-4">
               {filteredMessages.map((message) => {
                 const active = selectedId === message.id;
 
@@ -620,8 +821,8 @@ export default function Page() {
                       setSelectedMessage(message);
                     }}
                     className={`w-full rounded-2xl border p-4 text-left transition ${active
-                      ? "border-slate-900 bg-slate-900 text-white shadow"
-                      : "border-slate-200 bg-white hover:border-slate-300"
+                        ? "border-slate-900 bg-slate-900 text-white shadow"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
                       }`}
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -661,158 +862,14 @@ export default function Page() {
           </div>
 
           <div className="space-y-6">
-            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <h3 className="text-lg font-semibold">Audit log</h3>
-
-              <div className="mt-4">
-                {auditLogs.length > 0 ? (
-                  <div className="space-y-3">
-                    {auditLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        className="rounded-2xl border border-slate-200 bg-white p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-800">{log.action}</p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {log.actor} · {formatDate(log.created_at)}
-                            </p>
-                          </div>
-                        </div>
-
-                        {log.metadata_json && (
-                          <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
-                            {log.metadata_json}
-                          </pre>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
-                    No audit log entries for this message yet.
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <h3 className="text-lg font-semibold">Documents</h3>
-
-              <div className="mt-4 space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <input
-                    type="file"
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        uploadDocument(file);
-                      }
-                      e.target.value = "";
-                    }}
-                    disabled={!selectedMessage || uploading}
-                    className="block w-full text-sm text-slate-600"
-                  />
-
-                  <span className="text-xs text-slate-500">
-                    {uploading ? "Uploading..." : "Upload a .txt, .md, .csv, or similar text file"}
-                  </span>
-                </div>
-
-                {documents.length > 0 ? (
-                  <div className="space-y-2">
-                    {documents.map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="rounded-2xl border border-slate-200 bg-white p-3"
-                      >
-                        <p className="text-sm font-medium text-slate-800">{doc.filename}</p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {doc.file_type || "unknown type"} · uploaded {formatDate(doc.created_at)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
-                    No documents uploaded for this message yet.
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <div className="mb-4">
-                <h2 className="text-xl font-semibold">Create message</h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  Paste an inbound email directly into the app.
-                </p>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Subject</label>
-                  <input
-                    value={createForm.subject}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setCreateForm((prev) => ({ ...prev, subject: e.target.value }))
-                    }
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-                    placeholder="Need a quote for website redesign"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Sender email</label>
-                  <input
-                    value={createForm.sender_email}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setCreateForm((prev) => ({ ...prev, sender_email: e.target.value }))
-                    }
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-                    placeholder="client@example.com"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Sender name</label>
-                  <input
-                    value={createForm.sender_name}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setCreateForm((prev) => ({ ...prev, sender_name: e.target.value }))
-                    }
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-                    placeholder="John"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Email body</label>
-                  <textarea
-                    value={createForm.body_text}
-                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                      setCreateForm((prev) => ({ ...prev, body_text: e.target.value }))
-                    }
-                    className="min-h-[140px] w-full rounded-2xl border border-slate-300 p-3 text-sm outline-none focus:border-slate-500"
-                    placeholder="Hi, I need a quote for redesigning my company website..."
-                  />
-                </div>
-              </div>
-
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={createMessage}
-                  disabled={creating}
-                  className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
-                >
-                  {creating ? "Creating..." : "Create message"}
-                </button>
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-200 p-5">
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                   <div>
-                    <h2 className="text-xl font-semibold">
+                    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Selected request
+                    </p>
+                    <h2 className="mt-1 text-2xl font-semibold">
                       {selectedMessage?.subject || "Select a message"}
                     </h2>
                     {selectedMessage && (
@@ -824,14 +881,8 @@ export default function Page() {
 
                   {selectedMessage && (
                     <div className="flex flex-wrap gap-2">
-                      <Badge
-                        text={selectedMessage.status}
-                        className={statusStyles[selectedMessage.status]}
-                      />
-                      <Badge
-                        text={selectedMessage.category}
-                        className={categoryStyles[selectedMessage.category]}
-                      />
+                      <Badge text={selectedMessage.status} className={statusStyles[selectedMessage.status]} />
+                      <Badge text={selectedMessage.category} className={categoryStyles[selectedMessage.category]} />
                       {typeof selectedMessage.ai_confidence === "number" && (
                         <Badge
                           text={`AI ${Math.round(selectedMessage.ai_confidence * 100)}%`}
@@ -852,14 +903,88 @@ export default function Page() {
 
                 {selectedMessage && (
                   <>
-                    <div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <p className="mb-2 text-sm font-medium text-slate-700">Original email</p>
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-700 shadow-sm">
-                        {selectedMessage.body_text}
-                      </div>
+                      <div className="text-sm leading-6 text-slate-700">{selectedMessage.body_text}</div>
                     </div>
+                    <div
+                      className={`rounded-2xl border p-4 ${recommendationStyles[workflowRecommendation.tone]}`}
+                    >
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                            Recommended next step
+                          </p>
+                          <h3 className="mt-1 text-lg font-semibold">{workflowRecommendation.title}</h3>
+                          <p className="mt-1 text-sm opacity-90">{workflowRecommendation.description}</p>
+                        </div>
 
+                        {workflowRecommendation.action === "process" && (
+                          <button
+                            onClick={processSelectedMessage}
+                            disabled={actionLoading !== null || !selectedMessage}
+                            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+
+                        {workflowRecommendation.action === "missing-info" && (
+                          <button
+                            onClick={requestMissingInfoDraft}
+                            disabled={actionLoading !== null || !selectedMessage}
+                            className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity700 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+
+                        {workflowRecommendation.action === "approve" && (
+                          <button
+                            onClick={approveSelectedMessage}
+                            disabled={
+                              actionLoading !== null ||
+                              !selectedMessage ||
+                              selectedMessage.status === "approved" ||
+                              selectedMessage.status === "sent"
+                            }
+                            className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+
+                        {workflowRecommendation.action === "send" && (
+                          <button
+                            onClick={sendSelectedMessage}
+                            disabled={actionLoading !== null || !selectedMessage || selectedMessage.status !== "approved"}
+                            className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+                      </div>
+
+                      {missingInfoItems.length > 0 && (
+                        <div className="mt-3 rounded-xl bg-white/60 p-3 text-sm">
+                          <p className="font-medium">Missing details:</p>
+                          <ul className="mt-2 list-disc pl-5">
+                            {missingInfoItems.map((item, index) => (
+                              <li key={index}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={requestMissingInfoDraft}
+                        disabled={actionLoading !== null || !selectedMessage}
+                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Request missing info
+                      </button>
+
                       <button
                         onClick={approveSelectedMessage}
                         disabled={
@@ -893,15 +1018,126 @@ export default function Page() {
               </div>
             </div>
 
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-semibold">Quote summary</h3>
+
+                <span
+                  className={`rounded-xl px-2.5 py-1 text-xs font-medium ${Array.isArray(quoteSummary.missing_information) && quoteSummary.missing_information.length > 0
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-emerald-100 text-emerald-700"
+                    }`}
+                >
+                  {Array.isArray(quoteSummary.missing_information) && quoteSummary.missing_information.length > 0
+                    ? "Needs more info"
+                    : "Ready to review"}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Requested service</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.requested_service)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Project type</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.project_type)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Company</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.company_name)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Website URL</p>
+                  <p className="mt-1 break-all text-sm text-slate-800">{renderFieldValue(quoteSummary.website_url)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Budget</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.budget)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Timeline</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.timeline)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Location</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.location)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Pages needed</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.pages_needed)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Business goals</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.business_goals)}</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Missing information</p>
+                  <p className="mt-1 text-sm text-slate-800">{renderFieldValue(quoteSummary.missing_information)}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h3 className="text-lg font-semibold">Documents</h3>
+
+              <div className="mt-4 space-y-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <input
+                    type="file"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        uploadDocument(file);
+                      }
+                      e.target.value = "";
+                    }}
+                    disabled={!selectedMessage || uploading}
+                    className="block w-full text-sm text-slate-600"
+                  />
+
+                  <span className="text-xs text-slate-500">
+                    {uploading ? "Uploading..." : "Upload a .txt, .md, .csv, or PDF file"}
+                  </span>
+                </div>
+
+                {documents.length > 0 ? (
+                  <div className="space-y-2">
+                    {documents.map((doc) => (
+                      <div key={doc.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-sm font-medium text-slate-800">{doc.filename}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {doc.file_type || "unknown type"} · uploaded {formatDate(doc.created_at)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    No documents uploaded for this message yet.
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="grid gap-6 xl:grid-cols-2">
-              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h3 className="text-lg font-semibold">Extracted fields</h3>
 
                 <div className="mt-4">
                   {processedData?.extracted_fields ? (
                     <div className="space-y-3">
                       {Object.entries(processedData.extracted_fields).map(([key, value]) => (
-                        <div key={key} className="rounded-2xl border border-slate-200 bg-white p-3">
+                        <div key={key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                             {prettyKey(key)}
                           </p>
@@ -919,7 +1155,7 @@ export default function Page() {
                 </div>
               </div>
 
-              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h3 className="text-lg font-semibold">Draft reply</h3>
 
                 <div className="mt-4 space-y-4">
@@ -927,7 +1163,7 @@ export default function Page() {
                     value={editedDraft}
                     onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditedDraft(e.target.value)}
                     placeholder="AI-generated draft will appear here"
-                    className="min-h-[300px] w-full rounded-2xl border border-slate-300 p-3 text-sm outline-none focus:border-slate-500"
+                    className="min-h-[300px] w-full rounded-2xl border border-slate-300 p-3 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                   />
 
                   <div className="flex items-center justify-between gap-3">
@@ -945,45 +1181,80 @@ export default function Page() {
               </div>
             </div>
 
-            <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <h3 className="text-lg font-semibold">AI summary</h3>
+            <div className="grid gap-6 xl:grid-cols-2">
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-lg font-semibold">AI summary</h3>
 
-              <div className="mt-4">
-                {processedData ? (
-                  <div className="space-y-3 text-sm text-slate-700">
-                    <div>
-                      <span className="font-medium">Category:</span> {processedData.category}
+                <div className="mt-4">
+                  {processedData ? (
+                    <div className="space-y-3 text-sm text-slate-700">
+                      <div>
+                        <span className="font-medium">Category:</span> {processedData.category}
+                      </div>
+                      <div>
+                        <span className="font-medium">Confidence:</span>{" "}
+                        {Math.round(processedData.confidence * 100)}%
+                      </div>
+                      <div>
+                        <span className="font-medium">Summary:</span>{" "}
+                        {processedData.classification_summary || "No summary returned."}
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-medium">Confidence:</span>{" "}
-                      {Math.round(processedData.confidence * 100)}%
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                      Process a message to see its AI summary, extracted fields, and draft reply.
                     </div>
-                    <div>
-                      <span className="font-medium">Summary:</span>{" "}
-                      {processedData.classification_summary || "No summary returned."}
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-lg font-semibold">Audit log</h3>
+
+                <div className="mt-4">
+                  {auditLogs.length > 0 ? (
+                    <div className="space-y-3">
+                      {auditLogs.map((log) => (
+                        <div key={log.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-slate-800">{log.action}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {log.actor} · {formatDate(log.created_at)}
+                              </p>
+                            </div>
+                          </div>
+
+                          {log.metadata_json && (
+                            <pre className="mt-3 overflow-x-auto rounded-xl bg-white p-3 text-xs text-slate-600">
+                              {log.metadata_json}
+                            </pre>
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
-                    Process a message to see its AI summary, extracted fields, and draft reply.
-                  </div>
-                )}
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                      No audit log entries for this message yet.
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <div
-            className={`rounded-2xl px-4 py-3 text-sm text-white shadow-lg ${toast.type === "success" ? "bg-emerald-600" : "bg-red-600"
-              }`}
-          >
-            {toast.message}
+        {toast && (
+          <div className="fixed bottom-4 right-4 z-50">
+            <div
+              className={`rounded-2xl px-4 py-3 text-sm text-white shadow-lg ${toast.type === "success" ? "bg-emerald-600" : "bg-red-600"
+                }`}
+            >
+              {toast.message}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
