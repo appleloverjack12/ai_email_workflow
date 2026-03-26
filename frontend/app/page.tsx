@@ -638,6 +638,8 @@ export default function Page() {
       actionLabel: "Approve draft",
     };
   }, [selectedMessage, processedData, missingInfoItems.length]);
+  [selectedMessage, processedData, missingInfoItems.length]
+
   const recommendationStyles: Record<string, string> = {
     slate: "border-slate-200 bg-slate-50 text-slate-800",
     blue: "border-blue-200 bg-blue-50 text-blue-900",
@@ -821,8 +823,8 @@ export default function Page() {
                       setSelectedMessage(message);
                     }}
                     className={`w-full rounded-2xl border p-4 text-left transition ${active
-                        ? "border-slate-900 bg-slate-900 text-white shadow"
-                        : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
+                      ? "border-slate-900 bg-slate-900 text-white shadow"
+                      : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
                       }`}
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -933,11 +935,71 @@ export default function Page() {
                           <button
                             onClick={requestMissingInfoDraft}
                             disabled={actionLoading !== null || !selectedMessage}
-                            className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity700 disabled:opacity-50"
+                            className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
                           >
                             {workflowRecommendation.actionLabel}
                           </button>
                         )}
+
+                        {workflowRecommendation.action === "approve" && (
+                          <button
+                            onClick={approveSelectedMessage}
+                            disabled={
+                              actionLoading !== null ||
+                              !selectedMessage ||
+                              selectedMessage.status === "approved" ||
+                              selectedMessage.status === "sent"
+                            }
+                            className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+
+                        {workflowRecommendation.action === "send" && (
+                          <button
+                            onClick={sendSelectedMessage}
+                            disabled={actionLoading !== null || !selectedMessage || selectedMessage.status !== "approved"}
+                            className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+                      </div>
+
+                      {missingInfoItems.length > 0 && (
+                        <div className="mt-3 rounded-xl bg-white/60 p-3 text-sm">
+                          <p className="font-medium">Missing details:</p>
+                          <ul className="mt-2 list-disc pl-5">
+                            {missingInfoItems.map((item, index) => (
+                              <li key={index}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className={`rounded-2xl border p-4 ${recommendationStyles[workflowRecommendation.tone]}`}
+                    >
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                            Recommended next step
+                          </p>
+                          <h3 className="mt-1 text-lg font-semibold">{workflowRecommendation.title}</h3>
+                          <p className="mt-1 text-sm opacity-90">{workflowRecommendation.description}</p>
+                        </div>
+
+                        {workflowRecommendation.action === "process" && (
+                          <button
+                            onClick={processSelectedMessage}
+                            disabled={actionLoading !== null || !selectedMessage}
+                            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            {workflowRecommendation.actionLabel}
+                          </button>
+                        )}
+
 
                         {workflowRecommendation.action === "approve" && (
                           <button
@@ -1024,8 +1086,8 @@ export default function Page() {
 
                 <span
                   className={`rounded-xl px-2.5 py-1 text-xs font-medium ${Array.isArray(quoteSummary.missing_information) && quoteSummary.missing_information.length > 0
-                      ? "bg-amber-100 text-amber-700"
-                      : "bg-emerald-100 text-emerald-700"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-emerald-100 text-emerald-700"
                     }`}
                 >
                   {Array.isArray(quoteSummary.missing_information) && quoteSummary.missing_information.length > 0
