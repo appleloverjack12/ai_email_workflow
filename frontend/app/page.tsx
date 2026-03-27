@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-
+import React, { useEffect, useMemo, useState, useRef } from "react";
 type MessageCategory =
   | "lead"
   | "quote_request"
@@ -158,6 +157,7 @@ export default function Page() {
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredMessages = useMemo(() => {
     return messages.filter((message) => {
@@ -208,6 +208,74 @@ export default function Page() {
       setLoading(false);
     }
   }
+
+  async function clearLocalInbox() {
+    const confirmed = window.confirm(
+      "Clear all local messages, drafts, documents, extracted fields, and audit logs from the app?"
+    );
+
+    if (!confirmed) return;
+
+    setActionLoading("clear-local");
+
+    try {
+      const response = await fetch(`${API_BASE}/messages/clear-local`, {
+        method: "DELETE",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to clear local inbox");
+
+      setMessages([]);
+      setSelectedId(null);
+      setSelectedMessage(null);
+      setProcessedData(null);
+      setEditedDraft("");
+      setDocuments([]);
+      setAuditLogs([]);
+
+      setToast({
+        type: "success",
+        message: "Local inbox cleared.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+
+  async function syncGmailInbox() {
+    setActionLoading("gmail-sync");
+
+    try {
+      const response = await fetch(`${API_BASE}/gmail/sync`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to sync Gmail");
+
+      await fetchMessages();
+      setToast({
+        type: "success",
+        message: `Imported ${data.imported_count} Gmail message(s).`,
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+
   async function uploadDocument(file: File) {
     if (!selectedMessage) {
       setToast({
@@ -464,30 +532,32 @@ export default function Page() {
     }
   }
 
-  async function sendSelectedMessage() {
-    if (!selectedMessage) return;
-    setActionLoading("send");
-    try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actor_name: "Jakov" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to send message");
+  
 
-      await fetchMessages();
-      await fetchMessageDetail(selectedMessage.id);
-      setToast({ type: "success", message: "Message sent." });
-    } catch (error) {
-      setToast({
-        type: "error",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setActionLoading(null);
-    }
+  async function sendSelectedMessage() {
+  if (!selectedMessage) return;
+  setActionLoading("send");
+
+  try {
+    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/send-gmail`, {
+      method: "POST",
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to send message via Gmail");
+
+    await fetchMessages();
+    await fetchMessageDetail(selectedMessage.id);
+    setToast({ type: "success", message: "Message sent via Gmail." });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    setActionLoading(null);
   }
+}
   async function processSelectedMessage() {
     if (!selectedMessage) return;
     setActionLoading("process");
@@ -661,8 +731,8 @@ export default function Page() {
                   Email + Document Review Dashboard
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm text-slate-200">
-                  Review inbound requests, extract structured project details, generate AI drafts,
-                  and keep a full human-approved workflow trail.
+                  Review inbound requests, extract project details, generate drafts,
+                  and keep a clear human approval workflow.
                 </p>
               </div>
 
@@ -675,9 +745,25 @@ export default function Page() {
                   {loading ? "Refreshing..." : "Refresh inbox"}
                 </button>
                 <button
+                  onClick={clearLocalInbox}
+                  disabled={actionLoading !== null}
+                  className="rounded-2xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                >
+                  Clear inbox
+                </button>
+
+                <button
+                  onClick={syncGmailInbox}
+                  disabled={actionLoading !== null}
+                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Sync Gmail
+                </button>
+
+                <button
                   onClick={processSelectedMessage}
                   disabled={!selectedMessage || actionLoading !== null}
-                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                  className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-black disabled:opacity-50"
                 >
                   Process with AI
                 </button>
@@ -777,14 +863,10 @@ export default function Page() {
         <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
           <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">Inbox</h2>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Select a message to review its details and workflow history.
-                  </p>
-                </div>
-              </div>
+              <h2 className="text-lg font-semibold">Inbox</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Select a message to review details, generated drafts, and workflow history.
+              </p>
 
               <div className="mt-4 flex gap-2">
                 <input
@@ -907,8 +989,11 @@ export default function Page() {
                   <>
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <p className="mb-2 text-sm font-medium text-slate-700">Original email</p>
-                      <div className="text-sm leading-6 text-slate-700">{selectedMessage.body_text}</div>
+                      <div className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                        {selectedMessage.body_text}
+                      </div>
                     </div>
+
                     <div
                       className={`rounded-2xl border p-4 ${recommendationStyles[workflowRecommendation.tone]}`}
                     >
@@ -978,75 +1063,8 @@ export default function Page() {
                         </div>
                       )}
                     </div>
-                    <div
-                      className={`rounded-2xl border p-4 ${recommendationStyles[workflowRecommendation.tone]}`}
-                    >
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
-                            Recommended next step
-                          </p>
-                          <h3 className="mt-1 text-lg font-semibold">{workflowRecommendation.title}</h3>
-                          <p className="mt-1 text-sm opacity-90">{workflowRecommendation.description}</p>
-                        </div>
 
-                        {workflowRecommendation.action === "process" && (
-                          <button
-                            onClick={processSelectedMessage}
-                            disabled={actionLoading !== null || !selectedMessage}
-                            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-                          >
-                            {workflowRecommendation.actionLabel}
-                          </button>
-                        )}
-
-
-                        {workflowRecommendation.action === "approve" && (
-                          <button
-                            onClick={approveSelectedMessage}
-                            disabled={
-                              actionLoading !== null ||
-                              !selectedMessage ||
-                              selectedMessage.status === "approved" ||
-                              selectedMessage.status === "sent"
-                            }
-                            className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                          >
-                            {workflowRecommendation.actionLabel}
-                          </button>
-                        )}
-
-                        {workflowRecommendation.action === "send" && (
-                          <button
-                            onClick={sendSelectedMessage}
-                            disabled={actionLoading !== null || !selectedMessage || selectedMessage.status !== "approved"}
-                            className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
-                          >
-                            {workflowRecommendation.actionLabel}
-                          </button>
-                        )}
-                      </div>
-
-                      {missingInfoItems.length > 0 && (
-                        <div className="mt-3 rounded-xl bg-white/60 p-3 text-sm">
-                          <p className="font-medium">Missing details:</p>
-                          <ul className="mt-2 list-disc pl-5">
-                            {missingInfoItems.map((item, index) => (
-                              <li key={index}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={requestMissingInfoDraft}
-                        disabled={actionLoading !== null || !selectedMessage}
-                        className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
-                      >
-                        Request missing info
-                      </button>
-
                       <button
                         onClick={approveSelectedMessage}
                         disabled={
@@ -1153,23 +1171,37 @@ export default function Page() {
               <h3 className="text-lg font-semibold">Documents</h3>
 
               <div className="mt-4 space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <input
-                    type="file"
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        uploadDocument(file);
-                      }
-                      e.target.value = "";
-                    }}
-                    disabled={!selectedMessage || uploading}
-                    className="block w-full text-sm text-slate-600"
-                  />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          uploadDocument(file);
+                        }
+                        e.target.value = "";
+                      }}
+                      disabled={!selectedMessage || uploading}
+                      className="hidden"
+                    />
 
-                  <span className="text-xs text-slate-500">
-                    {uploading ? "Uploading..." : "Upload a .txt, .md, .csv, or PDF file"}
-                  </span>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={!selectedMessage || uploading}
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {uploading ? "Uploading..." : "Add file"}
+                    </button>
+
+                    <span className="text-xs text-slate-500">
+                      {!selectedMessage
+                        ? "Select a message first"
+                        : "Upload a .txt, .md, .csv, or PDF file"}
+                    </span>
+                  </div>
                 </div>
 
                 {documents.length > 0 ? (

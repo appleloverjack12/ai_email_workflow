@@ -18,3 +18,5 @@ frontend/.next/
 .DS_Store
 Thumbs.db
 .vscode/
+
+backend/google_token.json

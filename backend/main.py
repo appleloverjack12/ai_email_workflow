@@ -2,6 +2,11 @@ from __future__ import annotations
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import os
+import base64
+import secrets
+from email.utils import parseaddr
+from googleapiclient.discovery import build
+from googleapiclient.discovery import build
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -13,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from io import BytesIO
 from pypdf import PdfReader
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from fastapi.responses import RedirectResponse, HTMLResponse
+from email.message import EmailMessage
 
 load_dotenv()
 
@@ -29,8 +39,56 @@ app.add_middleware(
 engine = create_engine("sqlite:///workflow.db", echo=False)
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback")
+GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
+
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
+
+oauth_pending: dict[str, str] = {}
+def get_google_client_config() -> dict:
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth env vars are not configured")
+
+    return {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [GOOGLE_REDIRECT_URI],
+        }
+    }
 
 
+def save_google_credentials(credentials: Credentials) -> None:
+    Path(GOOGLE_TOKEN_PATH).write_text(credentials.to_json(), encoding="utf-8")
+
+
+def load_google_credentials() -> Credentials | None:
+    token_file = Path(GOOGLE_TOKEN_PATH)
+    if not token_file.exists():
+        return None
+
+    creds = Credentials.from_authorized_user_file(str(token_file), GOOGLE_SCOPES)
+
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        save_google_credentials(creds)
+
+    return creds
+
+
+def google_connected() -> bool:
+    try:
+        creds = load_google_credentials()
+        return creds is not None and creds.valid
+    except Exception:
+        return False
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
 
@@ -288,6 +346,130 @@ def get_openai_client() -> OpenAI:
         )
     return OpenAI(api_key=api_key)
 
+def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
+    return session.exec(
+        select(Draft)
+        .where(Draft.message_id == message_id)
+        .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
+    ).first()
+
+
+def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
+    log = session.exec(
+        select(AuditLog)
+        .where(
+            AuditLog.message_id == message_id,
+            AuditLog.action == "gmail_imported",
+        )
+        .order_by(AuditLog.created_at.desc())
+    ).first()
+
+    if not log or not log.metadata_json:
+        return None
+
+    try:
+        return json.loads(log.metadata_json)
+    except Exception:
+        return None
+
+
+def build_gmail_raw_message(
+    *,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    thread_id: str | None = None,
+    in_reply_to: str | None = None,
+    references: str | None = None,
+) -> dict:
+    message = EmailMessage()
+    message["To"] = to_email
+    message["Subject"] = subject
+
+    if in_reply_to:
+        message["In-Reply-To"] = in_reply_to
+    if references:
+        message["References"] = references
+
+    message.set_content(body_text)
+
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+    payload = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
+
+    return payload
+
+def get_gmail_service():
+    creds = load_google_credentials()
+    if creds is None or not creds.valid:
+        raise HTTPException(status_code=401, detail="Gmail is not connected")
+    return build("gmail", "v1", credentials=creds)
+
+
+def extract_header(headers: list[dict], name: str) -> str | None:
+    for header in headers:
+        if header.get("name", "").lower() == name.lower():
+            return header.get("value")
+    return None
+
+
+def decode_gmail_body_data(data: str | None) -> str:
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8", errors="ignore")
+
+
+def extract_plain_text_from_payload(payload: dict | None) -> str:
+    if not payload:
+        return ""
+
+    mime_type = payload.get("mimeType", "")
+    body = payload.get("body", {}) or {}
+    data = body.get("data")
+
+    if mime_type == "text/plain" and data:
+        return decode_gmail_body_data(data)
+
+    parts = payload.get("parts", []) or []
+
+    for part in parts:
+        if part.get("mimeType") == "text/plain":
+            part_data = (part.get("body") or {}).get("data")
+            if part_data:
+                return decode_gmail_body_data(part_data)
+
+    for part in parts:
+        nested = extract_plain_text_from_payload(part)
+        if nested.strip():
+            return nested
+
+    if data:
+        return decode_gmail_body_data(data)
+
+    return ""
+
+
+def get_imported_gmail_ids(session: Session) -> set[str]:
+    rows = session.exec(
+        select(AuditLog).where(AuditLog.action == "gmail_imported")
+    ).all()
+
+    imported_ids: set[str] = set()
+    for row in rows:
+        if not row.metadata_json:
+            continue
+        try:
+            meta = json.loads(row.metadata_json)
+            gmail_id = meta.get("gmail_message_id")
+            if gmail_id:
+                imported_ids.add(gmail_id)
+        except Exception:
+            pass
+
+    return imported_ids
 
 def get_model_name() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
@@ -547,6 +729,323 @@ def ensure_message_classified(session: Session, message: Message) -> Message:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+@app.post("/messages/{message_id}/send-gmail")
+def send_message_via_gmail(message_id: int) -> dict:
+    service = get_gmail_service()
+
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        if message.status != MessageStatus.approved:
+            raise HTTPException(status_code=400, detail="Only approved messages can be sent")
+
+        draft = get_latest_draft_for_message(session, message_id)
+        if not draft or not draft.draft_text.strip():
+            raise HTTPException(status_code=400, detail="No saved draft found for this message")
+
+        gmail_meta = get_gmail_import_metadata(session, message_id)
+
+        thread_id = None
+        in_reply_to = None
+        references = None
+        subject = message.subject or "(No subject)"
+
+        if gmail_meta and gmail_meta.get("gmail_message_id"):
+            gmail_message_id = gmail_meta["gmail_message_id"]
+            original = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=gmail_message_id,
+                    format="metadata",
+                    metadataHeaders=["Message-ID", "References", "Subject"],
+                )
+                .execute()
+            )
+
+            headers = (original.get("payload") or {}).get("headers", []) or []
+            original_message_id = extract_header(headers, "Message-ID")
+            original_references = extract_header(headers, "References")
+            original_subject = extract_header(headers, "Subject")
+
+            thread_id = gmail_meta.get("thread_id") or original.get("threadId")
+            in_reply_to = original_message_id
+            references = (
+                f"{original_references} {original_message_id}".strip()
+                if original_references and original_message_id
+                else original_message_id
+            )
+            if original_subject:
+                subject = original_subject
+
+        gmail_payload = build_gmail_raw_message(
+            to_email=message.sender_email,
+            subject=subject,
+            body_text=draft.draft_text,
+            thread_id=thread_id,
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+
+        sent = (
+            service.users()
+            .messages()
+            .send(userId="me", body=gmail_payload)
+            .execute()
+        )
+
+        message.status = MessageStatus.sent
+        message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+
+        log_action(
+            session,
+            message_id,
+            "sent_via_gmail",
+            "gmail",
+            metadata_json=json.dumps(
+                {
+                    "gmail_sent_message_id": sent.get("id"),
+                    "thread_id": sent.get("threadId"),
+                }
+            ),
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "gmail_sent_message_id": sent.get("id"),
+            "thread_id": sent.get("threadId"),
+            "status": message.status,
+        }
+
+@app.delete("/messages/clear-local")
+def clear_local_messages() -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        docs = session.exec(select(Document)).all()
+        extracted_rows = session.exec(select(ExtractedFields)).all()
+        drafts = session.exec(select(Draft)).all()
+        logs = session.exec(select(AuditLog)).all()
+        messages = session.exec(select(Message)).all()
+
+        deleted_counts = {
+            "documents": 0,
+            "extracted_fields": 0,
+            "drafts": 0,
+            "audit_logs": 0,
+            "messages": 0,
+        }
+
+        for row in docs:
+            session.delete(row)
+            deleted_counts["documents"] += 1
+
+        for row in extracted_rows:
+            session.delete(row)
+            deleted_counts["extracted_fields"] += 1
+
+        for row in drafts:
+            session.delete(row)
+            deleted_counts["drafts"] += 1
+
+        for row in logs:
+            session.delete(row)
+            deleted_counts["audit_logs"] += 1
+
+        for row in messages:
+            session.delete(row)
+            deleted_counts["messages"] += 1
+
+        session.commit()
+
+        return {
+            "ok": True,
+            "deleted": deleted_counts,
+        }
+
+@app.post("/gmail/sync")
+def gmail_sync(max_results: int = 10) -> dict:
+    service = get_gmail_service()
+
+    gmail_list = (
+    service.users()
+    .messages()
+    .list(
+        userId="me",
+        labelIds=["INBOX"],
+        q="category:primary -from:noreply -from:no-reply -from:notifications -from:updates",
+        maxResults=max_results,
+    )
+    .execute()
+)
+
+    message_refs = gmail_list.get("messages", []) or []
+
+    imported_count = 0
+    skipped_count = 0
+    imported_ids: list[int] = []
+
+    with Session(engine, expire_on_commit=False) as session:
+        existing_gmail_ids = get_imported_gmail_ids(session)
+
+        for ref in message_refs:
+            gmail_message_id = ref.get("id")
+            if not gmail_message_id:
+                skipped_count += 1
+                continue
+
+            if gmail_message_id in existing_gmail_ids:
+                skipped_count += 1
+                continue
+
+            gmail_message = (
+                service.users()
+                .messages()
+                .get(userId="me", id=gmail_message_id, format="full")
+                .execute()
+            )
+
+            payload = gmail_message.get("payload", {}) or {}
+            headers = payload.get("headers", []) or []
+
+            subject = extract_header(headers, "Subject") or "(No subject)"
+            from_header = extract_header(headers, "From") or ""
+            sender_name, sender_email = parseaddr(from_header)
+
+            if not sender_email:
+                skipped_count += 1
+                continue
+
+            body_text = extract_plain_text_from_payload(payload).strip()
+            snippet = gmail_message.get("snippet","") or ""
+            
+            if (
+                not body_text
+                or len(body_text) > 4000
+                or body_text.count("http") > 5
+                
+            ):
+                body_text = snippet
+
+            message = Message(
+                subject=subject,
+                sender_email=sender_email,
+                sender_name=sender_name or None,
+                body_text=body_text,
+            )
+            session.add(message)
+            session.commit()
+            session.refresh(message)
+
+            log_action(
+                session,
+                message.id,
+                "gmail_imported",
+                "gmail_sync",
+                metadata_json=json.dumps(
+                    {
+                        "gmail_message_id": gmail_message_id,
+                        "thread_id": gmail_message.get("threadId"),
+                    }
+                ),
+            )
+
+            imported_count += 1
+            imported_ids.append(message.id)
+            existing_gmail_ids.add(gmail_message_id)
+
+    return {
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
+        "imported_message_ids": imported_ids,
+    }
+
+
+@app.get("/auth/google/start")
+def google_auth_start() -> RedirectResponse:
+    client_config = get_google_client_config()
+
+    state = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(96)[:128]
+
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+        state=state,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
+    )
+
+    oauth_pending[state] = code_verifier
+
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+
+    return RedirectResponse(url=authorization_url)
+
+
+@app.get("/auth/google/callback")
+def google_auth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    if error:
+        raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state in Google callback")
+
+    if state not in oauth_pending:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    code_verifier = oauth_pending.pop(state)
+
+    client_config = get_google_client_config()
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+        state=state,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
+    )
+
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+    save_google_credentials(credentials)
+
+    return HTMLResponse(
+        """
+        <html>
+          <body style="font-family: Arial, sans-serif; padding: 24px;">
+            <h2>Gmail connected successfully</h2>
+            <p>You can close this tab and return to the dashboard.</p>
+          </body>
+        </html>
+        """
+    )
+
+
+@app.get("/auth/google/status")
+def google_auth_status() -> dict:
+    return {"connected": google_connected()}
+
+
+@app.post("/auth/google/disconnect")
+def google_auth_disconnect() -> dict:
+    token_file = Path(GOOGLE_TOKEN_PATH)
+    if token_file.exists():
+        token_file.unlink()
+    return {"connected": False}
+
 
 @app.get("/messages/{message_id}/documents")
 def list_message_documents(message_id: int) -> dict:
