@@ -352,7 +352,60 @@ def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | N
         .where(Draft.message_id == message_id)
         .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
     ).first()
+def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
+    return session.exec(
+        select(Draft)
+        .where(Draft.message_id == message_id)
+        .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
+    ).first()
 
+
+def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
+    log = session.exec(
+        select(AuditLog)
+        .where(
+            AuditLog.message_id == message_id,
+            AuditLog.action == "gmail_imported",
+        )
+        .order_by(AuditLog.created_at.desc())
+    ).first()
+
+    if not log or not log.metadata_json:
+        return None
+
+    try:
+        return json.loads(log.metadata_json)
+    except Exception:
+        return None
+
+
+def build_gmail_raw_message(
+    *,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    thread_id: str | None = None,
+    in_reply_to: str | None = None,
+    references: str | None = None,
+) -> dict:
+    message = EmailMessage()
+    message["To"] = to_email
+    message["Subject"] = subject
+
+    if in_reply_to:
+        message["In-Reply-To"] = in_reply_to
+    if references:
+        message["References"] = references
+
+    message.set_content(body_text)
+
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+    payload = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
+
+    return payload
 
 def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
     log = session.exec(
@@ -784,6 +837,105 @@ def send_message_via_gmail(message_id: int) -> dict:
             to_email=message.sender_email,
             subject=subject,
             body_text=draft.draft_text,
+            thread_id=thread_id,
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+
+        sent = (
+            service.users()
+            .messages()
+            .send(userId="me", body=gmail_payload)
+            .execute()
+        )
+
+        message.status = MessageStatus.sent
+        message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+
+        log_action(
+            session,
+            message_id,
+            "sent_via_gmail",
+            "gmail",
+            metadata_json=json.dumps(
+                {
+                    "gmail_sent_message_id": sent.get("id"),
+                    "thread_id": sent.get("threadId"),
+                }
+            ),
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "gmail_sent_message_id": sent.get("id"),
+            "thread_id": sent.get("threadId"),
+            "status": message.status,
+        }
+
+
+@app.post("/messages/{message_id}/send-gmail")
+def send_message_via_gmail(message_id: int) -> dict:
+    service = get_gmail_service()
+
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        if message.status != MessageStatus.approved:
+            raise HTTPException(status_code=400, detail="Only approved messages can be sent")
+
+        draft = get_latest_draft_for_message(session, message_id)
+        if not draft:
+            raise HTTPException(status_code=400, detail="No draft found for this message")
+
+        draft_text = (draft.approved_text or draft.draft_text or "").strip()
+        if not draft_text:
+            raise HTTPException(status_code=400, detail="Draft text is empty")
+
+        gmail_meta = get_gmail_import_metadata(session, message_id)
+
+        thread_id = None
+        in_reply_to = None
+        references = None
+        subject = message.subject or "(No subject)"
+
+        if gmail_meta and gmail_meta.get("gmail_message_id"):
+            gmail_message_id = gmail_meta["gmail_message_id"]
+
+            original = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=gmail_message_id,
+                    format="metadata",
+                    metadataHeaders=["Message-ID", "References", "Subject"],
+                )
+                .execute()
+            )
+
+            headers = (original.get("payload") or {}).get("headers", []) or []
+            original_message_id = extract_header(headers, "Message-ID")
+            original_references = extract_header(headers, "References")
+            original_subject = extract_header(headers, "Subject")
+
+            thread_id = gmail_meta.get("thread_id") or original.get("threadId")
+            in_reply_to = original_message_id
+            references = (
+                f"{original_references} {original_message_id}".strip()
+                if original_references and original_message_id
+                else original_message_id
+            )
+
+            if original_subject:
+                subject = original_subject
+
+        gmail_payload = build_gmail_raw_message(
+            to_email=message.sender_email,
+            subject=subject,
+            body_text=draft_text,
             thread_id=thread_id,
             in_reply_to=in_reply_to,
             references=references,
