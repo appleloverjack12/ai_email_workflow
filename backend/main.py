@@ -23,6 +23,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from fastapi.responses import RedirectResponse, HTMLResponse
 from email.message import EmailMessage
+from io import BytesIO
 
 load_dotenv()
 
@@ -64,6 +65,8 @@ def get_google_client_config() -> dict:
         }
     }
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True);
 
 def save_google_credentials(credentials: Credentials) -> None:
     Path(GOOGLE_TOKEN_PATH).write_text(credentials.to_json(), encoding="utf-8")
@@ -378,6 +381,138 @@ def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
     except Exception:
         return None
 
+def sanitize_filename(filename: str) -> str:
+    keep = []
+    for ch in filename:
+        if ch.isalnum() or ch in (" ", ".", "_", "-"):
+            keep.append(ch)
+        else:
+            keep.append("_")
+    return "".join(keep).strip() or "attachment"
+
+
+def extract_text_from_file_bytes(filename: str, mime_type: str | None, file_bytes: bytes) -> str | None:
+    lower_name = filename.lower()
+    mime_type = mime_type or ""
+
+    try:
+        if lower_name.endswith(".pdf") or mime_type == "application/pdf":
+            reader = PdfReader(BytesIO(file_bytes))
+            pages: list[str] = []
+            for page in reader.pages:
+                pages.append(page.extract_text() or "")
+            text = "\n".join(pages).strip()
+            return text or None
+
+        if (
+            lower_name.endswith(".txt")
+            or lower_name.endswith(".md")
+            or lower_name.endswith(".csv")
+            or mime_type.startswith("text/")
+        ):
+            text = file_bytes.decode("utf-8", errors="ignore").strip()
+            return text or None
+    except Exception:
+        return None
+
+    return None
+
+
+def walk_message_parts(parts: list[dict] | None) -> list[dict]:
+    if not parts:
+        return []
+
+    found: list[dict] = []
+    for part in parts:
+        found.append(part)
+        child_parts = part.get("parts") or []
+        found.extend(walk_message_parts(child_parts))
+    return found
+
+
+def fetch_attachment_bytes(service, gmail_message_id: str, part: dict) -> bytes | None:
+    body = part.get("body") or {}
+
+    if body.get("data"):
+        return base64.urlsafe_b64decode(body["data"] + "=" * (-len(body["data"]) % 4))
+
+    attachment_id = body.get("attachmentId")
+    if not attachment_id:
+        return None
+
+    attachment = (
+        service.users()
+        .messages()
+        .attachments()
+        .get(userId="me", messageId=gmail_message_id, id=attachment_id)
+        .execute()
+    )
+
+    data = attachment.get("data")
+    if not data:
+        return None
+
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+def import_gmail_attachments_for_message(
+    service,
+    session: Session,
+    *,
+    gmail_message: dict,
+    local_message_id: int,
+) -> int:
+    payload = gmail_message.get("payload", {}) or {}
+    all_parts = walk_message_parts(payload.get("parts") or [])
+
+    imported_count = 0
+    gmail_message_id = gmail_message.get("id")
+
+    for part in all_parts:
+        filename = (part.get("filename") or "").strip()
+        if not filename:
+            continue
+
+        mime_type = part.get("mimeType") or "application/octet-stream"
+        file_bytes = fetch_attachment_bytes(service, gmail_message_id, part)
+        if not file_bytes:
+            continue
+
+        safe_name = sanitize_filename(filename)
+        stored_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        stored_path = UPLOAD_DIR / stored_name
+        stored_path.write_bytes(file_bytes)
+
+        extracted_text = extract_text_from_file_bytes(filename, mime_type, file_bytes)
+
+        doc = Document(
+            message_id=local_message_id,
+            filename=filename,
+            file_type=mime_type,
+            storage_path=str(stored_path),
+            extracted_text=extracted_text,
+        )
+        session.add(doc)
+        session.commit()
+        session.refresh(doc)
+
+        log_action(
+            session,
+            local_message_id,
+            "gmail_attachment_imported",
+            "gmail_sync",
+            metadata_json=json.dumps(
+                {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "document_id": doc.id,
+                    "extracted_text_length": len(extracted_text) if extracted_text else 0,
+                }
+            ),
+        )
+
+        imported_count += 1
+
+    return imported_count
 
 def build_gmail_raw_message(
     *,
@@ -1017,27 +1152,28 @@ def clear_local_messages() -> dict:
             "ok": True,
             "deleted": deleted_counts,
         }
-
+        
 @app.post("/gmail/sync")
-def gmail_sync(max_results: int = 10) -> dict:
+def gmail_sync(max_results: int = 5) -> dict:
     service = get_gmail_service()
 
     gmail_list = (
-    service.users()
-    .messages()
-    .list(
-        userId="me",
-        labelIds=["INBOX"],
-        q="category:primary -from:noreply -from:no-reply -from:notifications -from:updates",
-        maxResults=max_results,
+        service.users()
+        .messages()
+        .list(
+            userId="me",
+            labelIds=["INBOX"],
+            q="category:primary -from:noreply -from:no-reply -from:notifications -from:updates",
+            maxResults=max_results,
+        )
+        .execute()
     )
-    .execute()
-)
 
     message_refs = gmail_list.get("messages", []) or []
 
     imported_count = 0
     skipped_count = 0
+    imported_attachment_count = 0
     imported_ids: list[int] = []
 
     with Session(engine, expire_on_commit=False) as session:
@@ -1072,13 +1208,12 @@ def gmail_sync(max_results: int = 10) -> dict:
                 continue
 
             body_text = extract_plain_text_from_payload(payload).strip()
-            snippet = gmail_message.get("snippet","") or ""
-            
+            snippet = gmail_message.get("snippet", "") or ""
+
             if (
                 not body_text
                 or len(body_text) > 4000
                 or body_text.count("http") > 5
-                
             ):
                 body_text = snippet
 
@@ -1092,6 +1227,13 @@ def gmail_sync(max_results: int = 10) -> dict:
             session.commit()
             session.refresh(message)
 
+            attachment_count = import_gmail_attachments_for_message(
+                service,
+                session,
+                gmail_message=gmail_message,
+                local_message_id=message.id,
+            )
+
             log_action(
                 session,
                 message.id,
@@ -1101,10 +1243,12 @@ def gmail_sync(max_results: int = 10) -> dict:
                     {
                         "gmail_message_id": gmail_message_id,
                         "thread_id": gmail_message.get("threadId"),
+                        "attachment_count": attachment_count,
                     }
                 ),
             )
 
+            imported_attachment_count += attachment_count
             imported_count += 1
             imported_ids.append(message.id)
             existing_gmail_ids.add(gmail_message_id)
@@ -1112,9 +1256,9 @@ def gmail_sync(max_results: int = 10) -> dict:
     return {
         "imported_count": imported_count,
         "skipped_count": skipped_count,
+        "imported_attachment_count": imported_attachment_count,
         "imported_message_ids": imported_ids,
     }
-
 
 @app.get("/auth/google/start")
 def google_auth_start() -> RedirectResponse:
