@@ -194,7 +194,10 @@ export default function Page() {
       const response = await fetch(`${API_BASE}/messages`);
       if (!response.ok) throw new Error("Failed to load messages");
       const data: Message[] = await response.json();
-      setMessages(data);
+      const sorted = [...data].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      setMessages(sorted);
 
       if (data.length > 0 && selectedId === null) {
         setSelectedId(data[0].id);
@@ -532,32 +535,32 @@ export default function Page() {
     }
   }
 
-  
+
 
   async function sendSelectedMessage() {
-  if (!selectedMessage) return;
-  setActionLoading("send");
+    if (!selectedMessage) return;
+    setActionLoading("send");
 
-  try {
-    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/send-gmail`, {
-      method: "POST",
-    });
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/send-gmail`, {
+        method: "POST",
+      });
 
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to send message via Gmail");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to send message via Gmail");
 
-    await fetchMessages();
-    await fetchMessageDetail(selectedMessage.id);
-    setToast({ type: "success", message: "Message sent via Gmail." });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setActionLoading(null);
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+      setToast({ type: "success", message: "Message sent via Gmail." });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }
-}
   async function processSelectedMessage() {
     if (!selectedMessage) return;
     setActionLoading("process");
