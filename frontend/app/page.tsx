@@ -17,7 +17,9 @@ type MessageStatus =
   | "approved"
   | "sent"
   | "rejected"
-  | "error";
+  | "error"
+  | "archived";
+
 type UploadedDocument = {
   id: number;
   filename: string;
@@ -100,6 +102,7 @@ const statusStyles: Record<MessageStatus, string> = {
   sent: "bg-violet-100 text-violet-700",
   rejected: "bg-rose-100 text-rose-700",
   error: "bg-red-100 text-red-700",
+  archived: "bg-slate-200 text-slate-700",
 };
 
 const categoryStyles: Record<MessageCategory, string> = {
@@ -152,7 +155,7 @@ export default function Page() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | MessageStatus>("all");
+  const [statusFilter, setStatusFilter] = useState<"active" | "all" | MessageStatus>("active");
   const [toast, setToast] = useState<Toast | null>(null);
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -168,7 +171,12 @@ export default function Page() {
         message.sender_email.toLowerCase().includes(q) ||
         (message.sender_name || "").toLowerCase().includes(q);
 
-      const matchesStatus = statusFilter === "all" || message.status === statusFilter;
+      const matchesStatus =
+        statusFilter === "all"
+          ? true
+          : statusFilter === "active"
+            ? message.status !== "archived"
+            : message.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
   }, [messages, search, statusFilter]);
@@ -251,6 +259,69 @@ export default function Page() {
     }
   }
 
+async function archiveSelectedMessage() {
+  if (!selectedMessage) return;
+  setActionLoading("archive");
+
+  try {
+    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
+      method: "POST",
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to archive message");
+
+    setSelectedId(null);
+    setSelectedMessage(null);
+    setProcessedData(null);
+    setEditedDraft("");
+    setDocuments([]);
+    setAuditLogs([]);
+
+    await fetchMessages();
+
+    setToast({
+      type: "success",
+      message: "Message archived.",
+    });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    setActionLoading(null);
+  }
+}
+
+async function unarchiveSelectedMessage() {
+  if (!selectedMessage) return;
+  setActionLoading("unarchive");
+
+  try {
+    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
+      method: "POST",
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
+
+    await fetchMessages();
+    await fetchMessageDetail(selectedMessage.id);
+
+    setToast({
+      type: "success",
+      message: "Message unarchived.",
+    });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    setActionLoading(null);
+  }
+}
 
   async function syncGmailInbox() {
     setActionLoading("gmail-sync");
@@ -755,6 +826,39 @@ export default function Page() {
                   Clear inbox
                 </button>
 
+                <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={fetchMessages}
+                  disabled={loading}
+                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/15 disabled:opacity-50"
+                >
+                  {loading ? "Refreshing..." : "Refresh inbox"}
+                </button>
+                <button
+                  onClick={clearLocalInbox}
+                  disabled={actionLoading !== null}
+                  className="rounded-2xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                >
+                  Clear inbox
+                </button>
+
+                <button
+                  onClick={syncGmailInbox}
+                  disabled={actionLoading !== null}
+                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Sync Gmail
+                </button>
+
+                <button
+                  onClick={processSelectedMessage}
+                  disabled={!selectedMessage || actionLoading !== null}
+                  className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-black disabled:opacity-50"
+                >
+                  Process with AI
+                </button>
+              </div>
+
                 <button
                   onClick={syncGmailInbox}
                   disabled={actionLoading !== null}
@@ -882,16 +986,18 @@ export default function Page() {
                 <select
                   value={statusFilter}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                    setStatusFilter(e.target.value as "all" | MessageStatus)
+                    setStatusFilter(e.target.value as "active" | "all" | MessageStatus)
                   }
                   className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                 >
+                  <option value="active">Active</option>
                   <option value="all">All</option>
                   <option value="new">New</option>
                   <option value="needs_review">Needs review</option>
                   <option value="approved">Approved</option>
                   <option value="sent">Sent</option>
                   <option value="rejected">Rejected</option>
+                  <option value="archived">Archived</option>
                 </select>
               </div>
             </div>

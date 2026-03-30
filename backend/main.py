@@ -120,6 +120,7 @@ class MessageStatus(str, Enum):
     sent = "sent"
     rejected = "rejected"
     error = "error"
+    archived = "archived"
 
 
 class ApprovalStatus(str, Enum):
@@ -1010,6 +1011,59 @@ def send_message_via_gmail(message_id: int) -> dict:
             "status": message.status,
         }
 
+
+@app.post("/messages/{message_id}/archive")
+def archive_message(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.archived
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "archived",
+            "Jakov",
+            metadata_json=None,
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
+
+
+@app.post("/messages/{message_id}/unarchive")
+def unarchive_message(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.needs_review
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "unarchived",
+            "Jakov",
+            metadata_json=None,
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
 
 @app.post("/messages/{message_id}/send-gmail")
 def send_message_via_gmail(message_id: int) -> dict:
