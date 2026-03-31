@@ -42,7 +42,9 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback")
+GOOGLE_REDIRECT_URI = os.getenv(
+    "GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback"
+)
 GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
 
 GOOGLE_SCOPES = [
@@ -51,9 +53,13 @@ GOOGLE_SCOPES = [
 ]
 
 oauth_pending: dict[str, str] = {}
+
+
 def get_google_client_config() -> dict:
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="Google OAuth env vars are not configured")
+        raise HTTPException(
+            status_code=500, detail="Google OAuth env vars are not configured"
+        )
 
     return {
         "web": {
@@ -65,8 +71,10 @@ def get_google_client_config() -> dict:
         }
     }
 
+
 UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True);
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def save_google_credentials(credentials: Credentials) -> None:
     Path(GOOGLE_TOKEN_PATH).write_text(credentials.to_json(), encoding="utf-8")
@@ -92,6 +100,8 @@ def google_connected() -> bool:
         return creds is not None and creds.valid
     except Exception:
         return False
+
+
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
 
@@ -111,9 +121,11 @@ class MessageCategory(str, Enum):
     spam = "spam"
     other = "other"
 
-class MessageSource(str,Enum):
-    manual = "manual",
-    gmail = "gmail",
+
+class MessageSource(str, Enum):
+    manual = ("manual",)
+    gmail = ("gmail",)
+
 
 class MessageStatus(str, Enum):
     new = "new"
@@ -148,7 +160,7 @@ class Message(SQLModel, table=True):
     source: MessageSource = Field(default=MessageSource.manual)
     gmail_message_id: Optional[str] = Field(default=None, index=True)
     gmail_synced_at: Optional[datetime] = None
-    gmail_thread_id: Optional[str] = Field(default=None, index = True)
+    gmail_thread_id: Optional[str] = Field(default=None, index=True)
     has_attachments: bool = False
 
 
@@ -353,6 +365,8 @@ Rules:
 - Keep the draft under 180 words.
 - Do not include a fake signature name.
 """
+
+
 # --- Helpers ---
 def get_openai_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -363,12 +377,15 @@ def get_openai_client() -> OpenAI:
         )
     return OpenAI(api_key=api_key)
 
+
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
         select(Draft)
         .where(Draft.message_id == message_id)
         .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
     ).first()
+
+
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
         select(Draft)
@@ -395,6 +412,7 @@ def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
     except Exception:
         return None
 
+
 def sanitize_filename(filename: str) -> str:
     keep = []
     for ch in filename:
@@ -405,7 +423,9 @@ def sanitize_filename(filename: str) -> str:
     return "".join(keep).strip() or "attachment"
 
 
-def extract_text_from_file_bytes(filename: str, mime_type: str | None, file_bytes: bytes) -> str | None:
+def extract_text_from_file_bytes(
+    filename: str, mime_type: str | None, file_bytes: bytes
+) -> str | None:
     lower_name = filename.lower()
     mime_type = mime_type or ""
 
@@ -468,6 +488,7 @@ def fetch_attachment_bytes(service, gmail_message_id: str, part: dict) -> bytes 
 
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
+
 def import_gmail_attachments_for_message(
     service,
     session: Session,
@@ -519,7 +540,9 @@ def import_gmail_attachments_for_message(
                     "filename": filename,
                     "mime_type": mime_type,
                     "document_id": doc.id,
-                    "extracted_text_length": len(extracted_text) if extracted_text else 0,
+                    "extracted_text_length": (
+                        len(extracted_text) if extracted_text else 0
+                    ),
                 }
             ),
         )
@@ -527,6 +550,7 @@ def import_gmail_attachments_for_message(
         imported_count += 1
 
     return imported_count
+
 
 def build_gmail_raw_message(
     *,
@@ -555,6 +579,7 @@ def build_gmail_raw_message(
         payload["threadId"] = thread_id
 
     return payload
+
 
 def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
     log = session.exec(
@@ -603,6 +628,7 @@ def build_gmail_raw_message(
 
     return payload
 
+
 def get_gmail_service():
     creds = load_google_credentials()
     if creds is None or not creds.valid:
@@ -621,7 +647,9 @@ def decode_gmail_body_data(data: str | None) -> str:
     if not data:
         return ""
     padded = data + "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8", errors="ignore")
+    return base64.urlsafe_b64decode(padded.encode("utf-8")).decode(
+        "utf-8", errors="ignore"
+    )
 
 
 def extract_plain_text_from_payload(payload: dict | None) -> str:
@@ -656,22 +684,14 @@ def extract_plain_text_from_payload(payload: dict | None) -> str:
 
 def get_imported_gmail_ids(session: Session) -> set[str]:
     rows = session.exec(
-        select(AuditLog).where(AuditLog.action == "gmail_imported")
+        select(Message).where(
+            Message.source == MessageSource.gmail,
+            Message.gmail_message_id.is_not(None),
+        )
     ).all()
 
-    imported_ids: set[str] = set()
-    for row in rows:
-        if not row.metadata_json:
-            continue
-        try:
-            meta = json.loads(row.metadata_json)
-            gmail_id = meta.get("gmail_message_id")
-            if gmail_id:
-                imported_ids.add(gmail_id)
-        except Exception:
-            pass
+    return {row.gmail_message_id for row in rows if row.gmail_message_id}
 
-    return imported_ids
 
 def get_model_name() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
@@ -794,7 +814,9 @@ def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
     )
     parsed = response.output_parsed
     if parsed is None:
-        raise HTTPException(status_code=500, detail="AI classification returned no structured output.")
+        raise HTTPException(
+            status_code=500, detail="AI classification returned no structured output."
+        )
     parsed.confidence = clamp_confidence(parsed.confidence)
     return parsed
 
@@ -825,7 +847,9 @@ def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutp
 
     parsed = response.output_parsed
     if parsed is None:
-        raise HTTPException(status_code=500, detail="AI extraction returned no structured output.")
+        raise HTTPException(
+            status_code=500, detail="AI extraction returned no structured output."
+        )
 
     return parsed
 
@@ -864,9 +888,12 @@ def ai_draft_reply(
 
     parsed = response.output_parsed
     if parsed is None:
-        raise HTTPException(status_code=500, detail="AI drafting returned no structured output.")
+        raise HTTPException(
+            status_code=500, detail="AI drafting returned no structured output."
+        )
 
     return parsed
+
 
 def ai_draft_missing_info(
     category: MessageCategory,
@@ -901,9 +928,13 @@ def ai_draft_missing_info(
 
     parsed = response.output_parsed
     if parsed is None:
-        raise HTTPException(status_code=500, detail="AI missing-info drafting returned no structured output.")
+        raise HTTPException(
+            status_code=500,
+            detail="AI missing-info drafting returned no structured output.",
+        )
 
     return parsed
+
 
 def ensure_message_classified(session: Session, message: Message) -> Message:
     if message.ai_confidence is not None and message.category != MessageCategory.other:
@@ -932,6 +963,7 @@ def ensure_message_classified(session: Session, message: Message) -> Message:
 def health() -> dict:
     return {"ok": True}
 
+
 @app.post("/messages/{message_id}/send-gmail")
 def send_message_via_gmail(message_id: int) -> dict:
     service = get_gmail_service()
@@ -940,27 +972,32 @@ def send_message_via_gmail(message_id: int) -> dict:
         message = get_message_or_404(session, message_id)
 
         if message.status != MessageStatus.approved:
-            raise HTTPException(status_code=400, detail="Only approved messages can be sent")
+            raise HTTPException(
+                status_code=400,
+                detail="Only approved messages can be sent",
+            )
 
         draft = get_latest_draft_for_message(session, message_id)
-        if not draft or not draft.draft_text.strip():
-            raise HTTPException(status_code=400, detail="No saved draft found for this message")
+        draft_text = ((draft.approved_text if draft and hasattr(draft, "approved_text") else None) or (draft.draft_text if draft else "") or "").strip()
 
-        gmail_meta = get_gmail_import_metadata(session, message_id)
+        if not draft_text:
+            raise HTTPException(
+                status_code=400,
+                detail="No saved draft found for this message",
+            )
 
         thread_id = None
         in_reply_to = None
         references = None
         subject = message.subject or "(No subject)"
 
-        if gmail_meta and gmail_meta.get("gmail_message_id"):
-            gmail_message_id = gmail_meta["gmail_message_id"]
+        if message.source == MessageSource.gmail and message.gmail_message_id:
             original = (
                 service.users()
                 .messages()
                 .get(
                     userId="me",
-                    id=gmail_message_id,
+                    id=message.gmail_message_id,
                     format="metadata",
                     metadataHeaders=["Message-ID", "References", "Subject"],
                 )
@@ -972,20 +1009,21 @@ def send_message_via_gmail(message_id: int) -> dict:
             original_references = extract_header(headers, "References")
             original_subject = extract_header(headers, "Subject")
 
-            thread_id = gmail_meta.get("thread_id") or original.get("threadId")
+            thread_id = message.gmail_thread_id or original.get("threadId")
             in_reply_to = original_message_id
             references = (
                 f"{original_references} {original_message_id}".strip()
                 if original_references and original_message_id
                 else original_message_id
             )
+
             if original_subject:
                 subject = original_subject
 
         gmail_payload = build_gmail_raw_message(
             to_email=message.sender_email,
             subject=subject,
-            body_text=draft.draft_text,
+            body_text=draft_text,
             thread_id=thread_id,
             in_reply_to=in_reply_to,
             references=references,
@@ -1078,6 +1116,7 @@ def unarchive_message(message_id: int) -> dict:
             "status": message.status,
         }
 
+
 @app.post("/messages/{message_id}/send-gmail")
 def send_message_via_gmail(message_id: int) -> dict:
     service = get_gmail_service()
@@ -1086,11 +1125,15 @@ def send_message_via_gmail(message_id: int) -> dict:
         message = get_message_or_404(session, message_id)
 
         if message.status != MessageStatus.approved:
-            raise HTTPException(status_code=400, detail="Only approved messages can be sent")
+            raise HTTPException(
+                status_code=400, detail="Only approved messages can be sent"
+            )
 
         draft = get_latest_draft_for_message(session, message_id)
         if not draft:
-            raise HTTPException(status_code=400, detail="No draft found for this message")
+            raise HTTPException(
+                status_code=400, detail="No draft found for this message"
+            )
 
         draft_text = (draft.approved_text or draft.draft_text or "").strip()
         if not draft_text:
@@ -1144,10 +1187,7 @@ def send_message_via_gmail(message_id: int) -> dict:
         )
 
         sent = (
-            service.users()
-            .messages()
-            .send(userId="me", body=gmail_payload)
-            .execute()
+            service.users().messages().send(userId="me", body=gmail_payload).execute()
         )
 
         message.status = MessageStatus.sent
@@ -1175,6 +1215,7 @@ def send_message_via_gmail(message_id: int) -> dict:
             "thread_id": sent.get("threadId"),
             "status": message.status,
         }
+
 
 @app.delete("/messages/clear-local")
 def clear_local_messages() -> dict:
@@ -1219,7 +1260,8 @@ def clear_local_messages() -> dict:
             "ok": True,
             "deleted": deleted_counts,
         }
-        
+
+
 @app.post("/gmail/sync")
 def gmail_sync(max_results: int = 5) -> dict:
     service = get_gmail_service()
@@ -1277,11 +1319,7 @@ def gmail_sync(max_results: int = 5) -> dict:
             body_text = extract_plain_text_from_payload(payload).strip()
             snippet = gmail_message.get("snippet", "") or ""
 
-            if (
-                not body_text
-                or len(body_text) > 4000
-                or body_text.count("http") > 5
-            ):
+            if not body_text or len(body_text) > 4000 or body_text.count("http") > 5:
                 body_text = snippet
 
             message = Message(
@@ -1289,6 +1327,11 @@ def gmail_sync(max_results: int = 5) -> dict:
                 sender_email=sender_email,
                 sender_name=sender_name or None,
                 body_text=body_text,
+                source=MessageSource.gmail,
+                gmail_message_id=gmail_message_id,
+                gmail_thread_id=gmail_message.get("threadId"),
+                gmail_synced_at=datetime.utcnow(),
+                has_attachments=False,
             )
             session.add(message)
             session.commit()
@@ -1300,6 +1343,11 @@ def gmail_sync(max_results: int = 5) -> dict:
                 gmail_message=gmail_message,
                 local_message_id=message.id,
             )
+            message.has_attachments = attachment_count > 0
+            message.updated_at = datetime.utcnow()
+            session.add(message)
+            session.commit()
+            session.refresh(message)
 
             log_action(
                 session,
@@ -1326,6 +1374,7 @@ def gmail_sync(max_results: int = 5) -> dict:
         "imported_attachment_count": imported_attachment_count,
         "imported_message_ids": imported_ids,
     }
+
 
 @app.get("/auth/google/start")
 def google_auth_start() -> RedirectResponse:
@@ -1364,7 +1413,9 @@ def google_auth_callback(
         raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
 
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state in Google callback")
+        raise HTTPException(
+            status_code=400, detail="Missing code or state in Google callback"
+        )
 
     if state not in oauth_pending:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
@@ -1385,16 +1436,14 @@ def google_auth_callback(
     credentials = flow.credentials
     save_google_credentials(credentials)
 
-    return HTMLResponse(
-        """
+    return HTMLResponse("""
         <html>
           <body style="font-family: Arial, sans-serif; padding: 24px;">
             <h2>Gmail connected successfully</h2>
             <p>You can close this tab and return to the dashboard.</p>
           </body>
         </html>
-        """
-    )
+        """)
 
 
 @app.get("/auth/google/status")
@@ -1435,6 +1484,7 @@ def list_message_documents(message_id: int) -> dict:
             ],
         }
 
+
 @app.get("/messages/{message_id}/audit-logs")
 def get_message_audit_logs(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1460,6 +1510,7 @@ def get_message_audit_logs(message_id: int) -> dict:
             ],
         }
 
+
 @app.post("/messages/{message_id}/draft-missing-info")
 def generate_missing_info_draft(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1467,7 +1518,9 @@ def generate_missing_info_draft(message_id: int) -> dict:
         message = ensure_message_classified(session, message)
         context = build_message_context(session, message)
         extracted = ai_extract_fields(message.category, context)
-        draft_output = ai_draft_missing_info(message.category, message.sender_name, extracted, context)
+        draft_output = ai_draft_missing_info(
+            message.category, message.sender_name, extracted, context
+        )
 
         draft = Draft(message_id=message_id, draft_text=draft_output.reply_text)
         message.status = MessageStatus.needs_review
@@ -1497,6 +1550,8 @@ def generate_missing_info_draft(message_id: int) -> dict:
             "missing_information": extracted.missing_information,
             "status": message.status,
         }
+
+
 @app.post("/messages", response_model=MessageRead)
 def create_message(payload: MessageCreate) -> Message:
     with Session(engine, expire_on_commit=False) as session:
@@ -1505,6 +1560,11 @@ def create_message(payload: MessageCreate) -> Message:
             sender_email=payload.sender_email,
             sender_name=payload.sender_name,
             body_text=payload.body_text,
+            source=MessageSource.manual,
+            gmail_message_id=None,
+            gmail_thread_id=None,
+            gmail_synced_at=None,
+            has_attachments=False,
         )
         session.add(message)
         session.commit()
@@ -1525,6 +1585,7 @@ def get_message(message_id: int) -> Message:
     with Session(engine, expire_on_commit=False) as session:
         return get_message_or_404(session, message_id)
 
+
 @app.get("/messages/{message_id}/latest-extraction")
 def get_latest_extraction(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1540,7 +1601,7 @@ def get_latest_extraction(message_id: int) -> dict:
             select(AuditLog)
             .where(
                 AuditLog.message_id == message_id,
-                AuditLog.action.in_(["processed", "classified"])
+                AuditLog.action.in_(["processed", "classified"]),
             )
             .order_by(AuditLog.created_at.desc())
         ).first()
@@ -1593,6 +1654,7 @@ def get_latest_draft(message_id: int) -> dict:
             "updated_at": draft.updated_at,
         }
 
+
 @app.post("/messages/{message_id}/documents")
 def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1606,7 +1668,9 @@ def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
         raw_bytes = file.file.read()
         stored_path.write_bytes(raw_bytes)
         extracted_text = extract_text_from_upload(safe_name, raw_bytes)
-        print(f"[UPLOAD DEBUG] {safe_name} extracted_text_length = {len(extracted_text) if extracted_text else 0}")
+        print(
+            f"[UPLOAD DEBUG] {safe_name} extracted_text_length = {len(extracted_text) if extracted_text else 0}"
+        )
 
         doc = Document(
             message_id=message_id,
@@ -1623,9 +1687,15 @@ def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
             message_id,
             "document_uploaded",
             "system",
-            metadata_json=json.dumps({"filename": safe_name, "stored_path": str(stored_path)}),
+            metadata_json=json.dumps(
+                {"filename": safe_name, "stored_path": str(stored_path)}
+            ),
         )
-        return {"document_id": doc.id, "filename": doc.filename, "stored_path": str(stored_path)}
+        return {
+            "document_id": doc.id,
+            "filename": doc.filename,
+            "stored_path": str(stored_path),
+        }
 
 
 @app.post("/messages/{message_id}/classify")
@@ -1643,18 +1713,18 @@ def run_classification(message_id: int) -> dict:
         session.commit()
 
         log_action(
-    session,
-    message_id,
-    "classified",
-    "ai",
-    metadata_json=json.dumps(
-        {
-            "category": result.category.value,
-            "confidence": result.confidence,
-            "classification_summary": result.summary,
-        }
-    ),
-)
+            session,
+            message_id,
+            "classified",
+            "ai",
+            metadata_json=json.dumps(
+                {
+                    "category": result.category.value,
+                    "confidence": result.confidence,
+                    "classification_summary": result.summary,
+                }
+            ),
+        )
         return {
             "message_id": message_id,
             "category": result.category,
@@ -1672,7 +1742,9 @@ def run_extraction(message_id: int) -> dict:
         print(f"[PROCESS DEBUG] message_id={message_id}")
         print(f"[PROCESS DEBUG] context preview:\n{context[:2000]}")
         extracted = ai_extract_fields(message.category, context)
-        row = ExtractedFields(message_id=message_id, json_data=extracted.model_dump_json())
+        row = ExtractedFields(
+            message_id=message_id, json_data=extracted.model_dump_json()
+        )
         session.add(row)
         message.updated_at = datetime.utcnow()
         session.add(message)
@@ -1691,6 +1763,8 @@ def run_extraction(message_id: int) -> dict:
             "extracted_fields_id": row.id,
             "json_data": json.loads(row.json_data),
         }
+
+
 @app.post("/messages/{message_id}/draft-reply")
 def generate_draft(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1709,7 +1783,11 @@ def generate_draft(message_id: int) -> dict:
         session.refresh(draft)
 
         log_action(session, message_id, "draft_created", "ai")
-        return {"message_id": message_id, "draft_id": draft.id, "draft_text": draft.draft_text}
+        return {
+            "message_id": message_id,
+            "draft_id": draft.id,
+            "draft_text": draft.draft_text,
+        }
 
 
 @app.post("/messages/{message_id}/process")
@@ -1723,7 +1801,9 @@ def process_message(message_id: int) -> dict:
         message.ai_confidence = classification.confidence
 
         extracted = ai_extract_fields(classification.category, context)
-        reply = ai_draft_reply(classification.category, message.sender_name, extracted, context)
+        reply = ai_draft_reply(
+            classification.category, message.sender_name, extracted, context
+        )
 
         extracted_row = ExtractedFields(
             message_id=message_id,
@@ -1741,18 +1821,18 @@ def process_message(message_id: int) -> dict:
         session.refresh(draft)
 
         log_action(
-    session,
-    message_id,
-    "processed",
-    "ai",
-    metadata_json=json.dumps(
-        {
-            "category": classification.category.value,
-            "confidence": classification.confidence,
-            "classification_summary": classification.summary,
-        }
-    ),
-)
+            session,
+            message_id,
+            "processed",
+            "ai",
+            metadata_json=json.dumps(
+                {
+                    "category": classification.category.value,
+                    "confidence": classification.confidence,
+                    "classification_summary": classification.summary,
+                }
+            ),
+        )
 
         return {
             "message_id": message_id,
@@ -1837,6 +1917,8 @@ def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
         session.commit()
         log_action(session, message_id, "rejected", payload.actor_name)
         return {"message_id": message_id, "status": message.status}
+
+
 @app.get("/messages/{message_id}/debug-context")
 def debug_message_context(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1857,12 +1939,15 @@ def debug_message_context(message_id: int) -> dict:
                     "id": doc.id,
                     "filename": doc.filename,
                     "has_extracted_text": bool(doc.extracted_text),
-                    "extracted_text_length": len(doc.extracted_text) if doc.extracted_text else 0,
+                    "extracted_text_length": (
+                        len(doc.extracted_text) if doc.extracted_text else 0
+                    ),
                 }
                 for doc in docs
             ],
             "context_preview": context[:4000],
         }
+
 
 @app.post("/messages/{message_id}/send")
 def send_message(message_id: int, payload: ApprovalRequest) -> dict:
@@ -1885,4 +1970,3 @@ def send_message(message_id: int, payload: ApprovalRequest) -> dict:
             "status": message.status,
             "note": "Stub send endpoint succeeded",
         }
-        
