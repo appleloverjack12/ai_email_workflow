@@ -41,6 +41,11 @@ type Message = {
   category: MessageCategory;
   status: MessageStatus;
   ai_confidence?: number | null;
+  source: "manual" | "gmail";
+  gmail_message_id?: string | null;
+  gmail_thread_id?: string | null;
+  gmail_synced_at?: string | null;
+  has_attachments: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -259,69 +264,69 @@ export default function Page() {
     }
   }
 
-async function archiveSelectedMessage() {
-  if (!selectedMessage) return;
-  setActionLoading("archive");
+  async function archiveSelectedMessage() {
+    if (!selectedMessage) return;
+    setActionLoading("archive");
 
-  try {
-    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
-      method: "POST",
-    });
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
+        method: "POST",
+      });
 
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to archive message");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to archive message");
 
-    setSelectedId(null);
-    setSelectedMessage(null);
-    setProcessedData(null);
-    setEditedDraft("");
-    setDocuments([]);
-    setAuditLogs([]);
+      setSelectedId(null);
+      setSelectedMessage(null);
+      setProcessedData(null);
+      setEditedDraft("");
+      setDocuments([]);
+      setAuditLogs([]);
 
-    await fetchMessages();
+      await fetchMessages();
 
-    setToast({
-      type: "success",
-      message: "Message archived.",
-    });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setActionLoading(null);
+      setToast({
+        type: "success",
+        message: "Message archived.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }
-}
 
-async function unarchiveSelectedMessage() {
-  if (!selectedMessage) return;
-  setActionLoading("unarchive");
+  async function unarchiveSelectedMessage() {
+    if (!selectedMessage) return;
+    setActionLoading("unarchive");
 
-  try {
-    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
-      method: "POST",
-    });
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
+        method: "POST",
+      });
 
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
 
-    await fetchMessages();
-    await fetchMessageDetail(selectedMessage.id);
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
 
-    setToast({
-      type: "success",
-      message: "Message unarchived.",
-    });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setActionLoading(null);
+      setToast({
+        type: "success",
+        message: "Message unarchived.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }
-}
 
   async function syncGmailInbox() {
     setActionLoading("gmail-sync");
@@ -818,6 +823,7 @@ async function unarchiveSelectedMessage() {
                 >
                   {loading ? "Refreshing..." : "Refresh inbox"}
                 </button>
+
                 <button
                   onClick={clearLocalInbox}
                   disabled={actionLoading !== null}
@@ -825,39 +831,6 @@ async function unarchiveSelectedMessage() {
                 >
                   Clear inbox
                 </button>
-
-                <div className="flex flex-wrap items-center gap-3">
-                <button
-                  onClick={fetchMessages}
-                  disabled={loading}
-                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/15 disabled:opacity-50"
-                >
-                  {loading ? "Refreshing..." : "Refresh inbox"}
-                </button>
-                <button
-                  onClick={clearLocalInbox}
-                  disabled={actionLoading !== null}
-                  className="rounded-2xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
-                >
-                  Clear inbox
-                </button>
-
-                <button
-                  onClick={syncGmailInbox}
-                  disabled={actionLoading !== null}
-                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
-                >
-                  Sync Gmail
-                </button>
-
-                <button
-                  onClick={processSelectedMessage}
-                  disabled={!selectedMessage || actionLoading !== null}
-                  className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-black disabled:opacity-50"
-                >
-                  Process with AI
-                </button>
-              </div>
 
                 <button
                   onClick={syncGmailInbox}
@@ -1037,6 +1010,16 @@ async function unarchiveSelectedMessage() {
                         text={message.category}
                         className={active ? "bg-white/15 text-white" : categoryStyles[message.category]}
                       />
+                      <Badge
+                        text={message.source === "gmail" ? "gmail" : "manual"}
+                        className={active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-700"}
+                      />
+                      {message.has_attachments && (
+                        <Badge
+                          text="attachment"
+                          className={active ? "bg-white/15 text-white" : "bg-amber-100 text-amber-700"}
+                        />
+                      )}
                     </div>
 
                     <p className={`mt-3 text-xs ${active ? "text-slate-300" : "text-slate-500"}`}>
@@ -1074,8 +1057,28 @@ async function unarchiveSelectedMessage() {
 
                   {selectedMessage && (
                     <div className="flex flex-wrap gap-2">
-                      <Badge text={selectedMessage.status} className={statusStyles[selectedMessage.status]} />
-                      <Badge text={selectedMessage.category} className={categoryStyles[selectedMessage.category]} />
+                      <Badge
+                        text={selectedMessage.status}
+                        className={statusStyles[selectedMessage.status]}
+                      />
+
+                      <Badge
+                        text={selectedMessage.category}
+                        className={categoryStyles[selectedMessage.category]}
+                      />
+
+                      <Badge
+                        text={selectedMessage.source === "gmail" ? "gmail" : "manual"}
+                        className="bg-slate-100 text-slate-700"
+                      />
+
+                      {selectedMessage.has_attachments && (
+                        <Badge
+                          text="attachment"
+                          className="bg-amber-100 text-amber-700"
+                        />
+                      )}
+
                       {typeof selectedMessage.ai_confidence === "number" && (
                         <Badge
                           text={`AI ${Math.round(selectedMessage.ai_confidence * 100)}%`}
