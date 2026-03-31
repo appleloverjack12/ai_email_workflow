@@ -210,6 +210,11 @@ class MessageRead(BaseModel):
     ai_confidence: Optional[float] = None
     created_at: datetime
     updated_at: datetime
+    source: MessageSource
+    gmail_message_id: Optional[str] = None
+    gmail_thread_id: Optional[str] = None
+    gmail_synced_at: Optional[datetime] = None
+    has_attachments: bool = False
 
 
 class DraftEditRequest(BaseModel):
