@@ -111,6 +111,9 @@ class MessageCategory(str, Enum):
     spam = "spam"
     other = "other"
 
+class MessageSource(str,Enum):
+    manual = "manual",
+    gmail = "gmail",
 
 class MessageStatus(str, Enum):
     new = "new"
