@@ -145,6 +145,11 @@ class Message(SQLModel, table=True):
     ai_confidence: Optional[float] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    source: MessageSource = Field(default=MessageSource.manual)
+    gmail_message_id: Optional[str] = Field(default=None, index=True)
+    gmail_synced_at: Optional[datetime] = None
+    gmail_thread_id: Optional[str] = Field(default=None, index = True)
+    has_attachments: bool = False
 
 
 class Document(SQLModel, table=True):
