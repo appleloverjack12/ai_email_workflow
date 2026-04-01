@@ -264,40 +264,42 @@ export default function Page() {
     }
   }
 
-  async function archiveSelectedMessage() {
-    if (!selectedMessage) return;
-    setActionLoading("archive");
+async function archiveSelectedMessage() {
+  if (!selectedMessage) return;
+  setActionLoading("archive");
 
-    try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
-        method: "POST",
-      });
+  try {
+    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
+      method: "POST",
+    });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to archive message");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to archive message");
 
-      setSelectedId(null);
-      setSelectedMessage(null);
-      setProcessedData(null);
-      setEditedDraft("");
-      setDocuments([]);
-      setAuditLogs([]);
+    setSelectedId(null);
+    setSelectedMessage(null);
+    setProcessedData(null);
+    setEditedDraft("");
+    setDocuments([]);
+    setAuditLogs([]);
 
-      await fetchMessages();
+    await fetchMessages();
 
-      setToast({
-        type: "success",
-        message: "Message archived.",
-      });
-    } catch (error) {
-      setToast({
-        type: "error",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setActionLoading(null);
-    }
+    setToast({
+      type: "success",
+      message: data.gmail_archived
+        ? "Message archived locally and in Gmail."
+        : "Message archived locally.",
+    });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    setActionLoading(null);
   }
+}
 
   async function unarchiveSelectedMessage() {
     if (!selectedMessage) return;

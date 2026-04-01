@@ -50,6 +50,8 @@ GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    
 ]
 
 oauth_pending: dict[str, str] = {}
@@ -377,6 +379,17 @@ def get_openai_client() -> OpenAI:
         )
     return OpenAI(api_key=api_key)
 
+def archive_gmail_message(service, gmail_message_id: str) -> dict:
+    return (
+        service.users()
+        .messages()
+        .modify(
+            userId="me",
+            id=gmail_message_id,
+            body={"removeLabelIds": ["INBOX"]},
+        )
+        .execute()
+    )
 
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
@@ -1062,6 +1075,45 @@ def send_message_via_gmail(message_id: int) -> dict:
             "status": message.status,
         }
 
+@app.post("/messages/{message_id}/archive")
+def archive_message(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        gmail_archived = False
+
+        if message.source == MessageSource.gmail and message.gmail_message_id:
+            service = get_gmail_service()
+            archive_gmail_message(service, message.gmail_message_id)
+            gmail_archived = True
+
+        message.status = MessageStatus.archived
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "archived",
+            "Jakov",
+            metadata_json=json.dumps(
+                {
+                    "gmail_archived": gmail_archived,
+                    "gmail_message_id": message.gmail_message_id,
+                    "gmail_thread_id": message.gmail_thread_id,
+                }
+            ),
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+            "gmail_archived": gmail_archived,
+        }
 
 @app.post("/messages/{message_id}/archive")
 def archive_message(message_id: int) -> dict:
