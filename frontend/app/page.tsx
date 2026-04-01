@@ -225,6 +225,8 @@ export default function Page() {
     }
   }
 
+
+  
   async function clearLocalInbox() {
     const confirmed = window.confirm(
       "Clear all local messages, drafts, documents, extracted fields, and audit logs from the app?"
@@ -264,7 +266,7 @@ export default function Page() {
     }
   }
 
-async function archiveSelectedMessage() {
+  async function archiveSelectedMessage() {
   if (!selectedMessage) return;
   setActionLoading("archive");
 
@@ -301,34 +303,34 @@ async function archiveSelectedMessage() {
   }
 }
 
-  async function unarchiveSelectedMessage() {
-    if (!selectedMessage) return;
-    setActionLoading("unarchive");
+async function unarchiveSelectedMessage() {
+  if (!selectedMessage) return;
+  setActionLoading("unarchive");
 
-    try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
-        method: "POST",
-      });
+  try {
+    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
+      method: "POST",
+    });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
 
-      await fetchMessages();
-      await fetchMessageDetail(selectedMessage.id);
+    await fetchMessages();
+    await fetchMessageDetail(selectedMessage.id);
 
-      setToast({
-        type: "success",
-        message: "Message unarchived.",
-      });
-    } catch (error) {
-      setToast({
-        type: "error",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setActionLoading(null);
-    }
+    setToast({
+      type: "success",
+      message: "Message unarchived.",
+    });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    setActionLoading(null);
   }
+}
 
   async function syncGmailInbox() {
     setActionLoading("gmail-sync");
@@ -1179,12 +1181,31 @@ async function archiveSelectedMessage() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
+                      {selectedMessage.status === "archived" ? (
+                        <button
+                          onClick={unarchiveSelectedMessage}
+                          disabled={actionLoading !== null}
+                          className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Unarchive
+                        </button>
+                      ) : (
+                        <button
+                          onClick={archiveSelectedMessage}
+                          disabled={actionLoading !== null}
+                          className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Archive
+                        </button>
+                      )}
+
                       <button
                         onClick={approveSelectedMessage}
                         disabled={
                           actionLoading !== null ||
                           selectedMessage.status === "approved" ||
-                          selectedMessage.status === "sent"
+                          selectedMessage.status === "sent" ||
+                          selectedMessage.status === "archived"
                         }
                         className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                       >
