@@ -1896,7 +1896,6 @@ def process_message(message_id: int) -> dict:
             "status": message.status,
         }
 
-
 @app.post("/messages/{message_id}/edit-draft")
 def edit_draft(message_id: int, payload: DraftEditRequest) -> dict:
     with Session(engine, expire_on_commit=False) as session:
@@ -1945,7 +1944,6 @@ def approve_message(message_id: int, payload: ApprovalRequest) -> dict:
         session.commit()
         log_action(session, message_id, "approved", payload.actor_name)
         return {"message_id": message_id, "status": message.status}
-
 
 @app.post("/messages/{message_id}/reject")
 def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
@@ -1999,7 +1997,6 @@ def debug_message_context(message_id: int) -> dict:
             ],
             "context_preview": context[:4000],
         }
-
 
 @app.post("/messages/{message_id}/send")
 def send_message(message_id: int, payload: ApprovalRequest) -> dict:
