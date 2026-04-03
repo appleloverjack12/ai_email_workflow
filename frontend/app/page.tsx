@@ -18,7 +18,8 @@ type MessageStatus =
   | "sent"
   | "rejected"
   | "error"
-  | "archived";
+  | "archived"
+  | "ignored";
 
 type UploadedDocument = {
   id: number;
@@ -108,6 +109,7 @@ const statusStyles: Record<MessageStatus, string> = {
   rejected: "bg-rose-100 text-rose-700",
   error: "bg-red-100 text-red-700",
   archived: "bg-slate-200 text-slate-700",
+  ignored: "bg-orange-100 text-orange-700",
 };
 
 const categoryStyles: Record<MessageCategory, string> = {
@@ -180,7 +182,7 @@ export default function Page() {
         statusFilter === "all"
           ? true
           : statusFilter === "active"
-            ? message.status !== "archived"
+            ? message.status !== "archived" && message.status !== "ignored"
             : message.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
@@ -226,7 +228,63 @@ export default function Page() {
   }
 
 
-  
+  async function ignoreSelectedMessage() {
+    if (!selectedMessage) return;
+    setActionLoading("ignore");
+
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/ignore`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to ignore message");
+
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Message ignored.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function unignoreSelectedMessage() {
+    if (!selectedMessage) return;
+    setActionLoading("unignore");
+
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unignore`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to unignore message");
+
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Message restored to inbox.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
   async function clearLocalInbox() {
     const confirmed = window.confirm(
       "Clear all local messages, drafts, documents, extracted fields, and audit logs from the app?"
@@ -267,86 +325,92 @@ export default function Page() {
   }
 
   async function archiveSelectedMessage() {
-  if (!selectedMessage) return;
-  setActionLoading("archive");
-
-  try {
-    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
-      method: "POST",
-    });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to archive message");
-
-    setSelectedId(null);
-    setSelectedMessage(null);
-    setProcessedData(null);
-    setEditedDraft("");
-    setDocuments([]);
-    setAuditLogs([]);
-
-    await fetchMessages();
-
-    setToast({
-      type: "success",
-      message: data.gmail_archived
-        ? "Message archived locally and in Gmail."
-        : "Message archived locally.",
-    });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setActionLoading(null);
-  }
-}
-
-async function unarchiveSelectedMessage() {
-  if (!selectedMessage) return;
-  setActionLoading("unarchive");
-
-  try {
-    const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
-      method: "POST",
-    });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
-
-    await fetchMessages();
-    await fetchMessageDetail(selectedMessage.id);
-
-    setToast({
-      type: "success",
-      message: "Message unarchived.",
-    });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  } finally {
-    setActionLoading(null);
-  }
-}
-
-  async function syncGmailInbox() {
-    setActionLoading("gmail-sync");
+    if (!selectedMessage) return;
+    setActionLoading("archive");
 
     try {
-      const response = await fetch(`${API_BASE}/gmail/sync`, {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
         method: "POST",
       });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to archive message");
+
+      setSelectedId(null);
+      setSelectedMessage(null);
+      setProcessedData(null);
+      setEditedDraft("");
+      setDocuments([]);
+      setAuditLogs([]);
+
+      await fetchMessages();
+
+      setToast({
+        type: "success",
+        message: data.gmail_archived
+          ? "Message archived locally and in Gmail."
+          : "Message archived locally.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function unarchiveSelectedMessage() {
+    if (!selectedMessage) return;
+    setActionLoading("unarchive");
+
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to unarchive message");
+
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Message unarchived.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function syncGmailInbox(autoProcess = false) {
+    setActionLoading(autoProcess ? "gmail-sync-ai" : "gmail-sync");
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/gmail/sync?max_results=10&auto_process=${autoProcess ? "true" : "false"}`,
+        {
+          method: "POST",
+        }
+      );
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to sync Gmail");
 
       await fetchMessages();
+
       setToast({
         type: "success",
-        message: `Imported ${data.imported_count} Gmail message(s).`,
+        message: autoProcess
+          ? `Imported ${data.imported_count} message(s) and auto-processed ${data.processed_count}.`
+          : `Imported ${data.imported_count} Gmail message(s).`,
       });
     } catch (error) {
       setToast({
@@ -837,11 +901,18 @@ async function unarchiveSelectedMessage() {
                 </button>
 
                 <button
-                  onClick={syncGmailInbox}
+                  onClick={() => syncGmailInbox(false)}
                   disabled={actionLoading !== null}
                   className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
                 >
                   Sync Gmail
+                </button>
+                <button
+                  onClick={() => syncGmailInbox(true)}
+                  disabled={actionLoading !== null}
+                  className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Sync + AI
                 </button>
 
                 <button
@@ -971,6 +1042,7 @@ async function unarchiveSelectedMessage() {
                   <option value="all">All</option>
                   <option value="new">New</option>
                   <option value="needs_review">Needs review</option>
+                  <option value="ignored">Ignored</option>
                   <option value="approved">Approved</option>
                   <option value="sent">Sent</option>
                   <option value="rejected">Rejected</option>
@@ -1198,7 +1270,23 @@ async function unarchiveSelectedMessage() {
                           Archive
                         </button>
                       )}
-
+                      {selectedMessage.status === "ignored" ? (
+                        <button
+                          onClick={unignoreSelectedMessage}
+                          disabled={actionLoading !== null}
+                          className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Unignore
+                        </button>
+                      ) : (
+                        <button
+                          onClick={ignoreSelectedMessage}
+                          disabled={actionLoading !== null || selectedMessage.status === "archived"}
+                          className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Ignore
+                        </button>
+                      )}
                       <button
                         onClick={approveSelectedMessage}
                         disabled={

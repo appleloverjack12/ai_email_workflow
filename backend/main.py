@@ -24,6 +24,7 @@ from google_auth_oauthlib.flow import Flow
 from fastapi.responses import RedirectResponse, HTMLResponse
 from email.message import EmailMessage
 from io import BytesIO
+import re
 
 load_dotenv()
 
@@ -51,7 +52,6 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.modify",
-    
 ]
 
 oauth_pending: dict[str, str] = {}
@@ -138,6 +138,7 @@ class MessageStatus(str, Enum):
     rejected = "rejected"
     error = "error"
     archived = "archived"
+    ignored = "ignored"
 
 
 class ApprovalStatus(str, Enum):
@@ -379,6 +380,7 @@ def get_openai_client() -> OpenAI:
         )
     return OpenAI(api_key=api_key)
 
+
 def archive_gmail_message(service, gmail_message_id: str) -> dict:
     return (
         service.users()
@@ -390,6 +392,7 @@ def archive_gmail_message(service, gmail_message_id: str) -> dict:
         )
         .execute()
     )
+
 
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
@@ -425,6 +428,46 @@ def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
     except Exception:
         return None
 
+def count_urls(text: str) -> int:
+    return len(re.findall(r"https?://|www\.", text or "", flags=re.IGNORECASE))
+
+
+def should_auto_ignore_message(
+    *,
+    subject: str,
+    sender_email: str,
+    body_text: str,
+) -> tuple[bool, str | None]:
+    subject_l = (subject or "").lower()
+    sender_l = (sender_email or "").lower()
+    body_l = (body_text or "").lower()
+
+    if "no-reply" in sender_l or "noreply" in sender_l:
+        return True, "noreply_sender"
+
+    if any(x in sender_l for x in ["notifications@", "notification@", "updates@", "mailer@", "news@", "newsletter@"]):
+        return True, "system_sender"
+
+    if "unsubscribe" in body_l or "manage preferences" in body_l or "view in browser" in body_l:
+        return True, "newsletter_pattern"
+
+    if count_urls(body_text) >= 8:
+        return True, "too_many_links"
+
+    promo_keywords = [
+        "sale",
+        "discount",
+        "special offer",
+        "limited time",
+        "shop now",
+        "save big",
+        "promo",
+        "marketing",
+    ]
+    if any(word in subject_l for word in promo_keywords):
+        return True, "promotional_subject"
+
+    return False, None
 
 def sanitize_filename(filename: str) -> str:
     keep = []
@@ -971,11 +1014,122 @@ def ensure_message_classified(session: Session, message: Message) -> Message:
     return message
 
 
+def run_ai_workflow_for_message(session: Session, message_id: int) -> dict:
+    message = get_message_or_404(session, message_id)
+    context = build_message_context(session, message)
+
+    classification = ai_classify_message(message.subject, context)
+    message.category = classification.category
+    message.ai_confidence = classification.confidence
+
+    extracted = ai_extract_fields(classification.category, context)
+    reply = ai_draft_reply(
+        classification.category,
+        message.sender_name,
+        extracted,
+        context,
+    )
+
+    extracted_row = ExtractedFields(
+        message_id=message_id,
+        json_data=extracted.model_dump_json(),
+    )
+    draft = Draft(
+        message_id=message_id,
+        draft_text=reply.reply_text,
+    )
+
+    message.status = MessageStatus.needs_review
+    message.updated_at = datetime.utcnow()
+
+    session.add(extracted_row)
+    session.add(draft)
+    session.add(message)
+    session.commit()
+    session.refresh(draft)
+
+    log_action(
+        session,
+        message_id,
+        "processed",
+        "ai",
+        metadata_json=json.dumps(
+            {
+                "category": classification.category.value,
+                "confidence": classification.confidence,
+                "classification_summary": classification.summary,
+            }
+        ),
+    )
+
+    return {
+        "message_id": message_id,
+        "category": classification.category,
+        "confidence": classification.confidence,
+        "classification_summary": classification.summary,
+        "extracted_fields": extracted.model_dump(),
+        "draft_text": reply.reply_text,
+        "status": message.status,
+    }
+
+
 # --- Routes ---
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
 
+@app.post("/messages/{message_id}/ignore")
+def ignore_message(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.ignored
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "ignored",
+            "Jakov",
+            metadata_json=None,
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
+
+
+@app.post("/messages/{message_id}/unignore")
+def unignore_message(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.new
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "unignored",
+            "Jakov",
+            metadata_json=None,
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
 
 @app.post("/messages/{message_id}/send-gmail")
 def send_message_via_gmail(message_id: int) -> dict:
@@ -991,7 +1145,11 @@ def send_message_via_gmail(message_id: int) -> dict:
             )
 
         draft = get_latest_draft_for_message(session, message_id)
-        draft_text = ((draft.approved_text if draft and hasattr(draft, "approved_text") else None) or (draft.draft_text if draft else "") or "").strip()
+        draft_text = (
+            (draft.approved_text if draft and hasattr(draft, "approved_text") else None)
+            or (draft.draft_text if draft else "")
+            or ""
+        ).strip()
 
         if not draft_text:
             raise HTTPException(
@@ -1043,10 +1201,7 @@ def send_message_via_gmail(message_id: int) -> dict:
         )
 
         sent = (
-            service.users()
-            .messages()
-            .send(userId="me", body=gmail_payload)
-            .execute()
+            service.users().messages().send(userId="me", body=gmail_payload).execute()
         )
 
         message.status = MessageStatus.sent
@@ -1074,6 +1229,7 @@ def send_message_via_gmail(message_id: int) -> dict:
             "thread_id": sent.get("threadId"),
             "status": message.status,
         }
+
 
 @app.post("/messages/{message_id}/archive")
 def archive_message(message_id: int) -> dict:
@@ -1114,6 +1270,7 @@ def archive_message(message_id: int) -> dict:
             "status": message.status,
             "gmail_archived": gmail_archived,
         }
+
 
 @app.post("/messages/{message_id}/archive")
 def archive_message(message_id: int) -> dict:
@@ -1315,7 +1472,7 @@ def clear_local_messages() -> dict:
 
 
 @app.post("/gmail/sync")
-def gmail_sync(max_results: int = 5) -> dict:
+def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
     service = get_gmail_service()
 
     gmail_list = (
@@ -1333,6 +1490,7 @@ def gmail_sync(max_results: int = 5) -> dict:
     message_refs = gmail_list.get("messages", []) or []
 
     imported_count = 0
+    processed_count = 0
     skipped_count = 0
     imported_attachment_count = 0
     imported_ids: list[int] = []
@@ -1374,6 +1532,12 @@ def gmail_sync(max_results: int = 5) -> dict:
             if not body_text or len(body_text) > 4000 or body_text.count("http") > 5:
                 body_text = snippet
 
+            should_ignore, ignore_reason = should_auto_ignore_message(
+                subject=subject,
+                sender_email=sender_email,
+                body_text=body_text,
+            )
+
             message = Message(
                 subject=subject,
                 sender_email=sender_email,
@@ -1384,6 +1548,7 @@ def gmail_sync(max_results: int = 5) -> dict:
                 gmail_thread_id=gmail_message.get("threadId"),
                 gmail_synced_at=datetime.utcnow(),
                 has_attachments=False,
+                status=MessageStatus.ignored if should_ignore else MessageStatus.new,
             )
             session.add(message)
             session.commit()
@@ -1395,6 +1560,7 @@ def gmail_sync(max_results: int = 5) -> dict:
                 gmail_message=gmail_message,
                 local_message_id=message.id,
             )
+
             message.has_attachments = attachment_count > 0
             message.updated_at = datetime.utcnow()
             session.add(message)
@@ -1415,15 +1581,38 @@ def gmail_sync(max_results: int = 5) -> dict:
                 ),
             )
 
+            if should_ignore:
+                log_action(
+                    session,
+                    message.id,
+                    "auto_ignored",
+                    "system",
+                    metadata_json=json.dumps({"reason": ignore_reason}),
+                )
+
             imported_attachment_count += attachment_count
             imported_count += 1
             imported_ids.append(message.id)
             existing_gmail_ids.add(gmail_message_id)
 
+            if auto_process and message.status != MessageStatus.ignored:
+                try:
+                    run_ai_workflow_for_message(session, message.id)
+                    processed_count += 1
+                except Exception as exc:
+                    log_action(
+                        session,
+                        message.id,
+                        "auto_process_failed",
+                        "system",
+                        metadata_json=json.dumps({"error": str(exc)}),
+                    )
+
     return {
         "imported_count": imported_count,
         "skipped_count": skipped_count,
         "imported_attachment_count": imported_attachment_count,
+        "processed_count": processed_count,
         "imported_message_ids": imported_ids,
     }
 
@@ -1845,56 +2034,8 @@ def generate_draft(message_id: int) -> dict:
 @app.post("/messages/{message_id}/process")
 def process_message(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-        context = build_message_context(session, message)
+        return run_ai_workflow_for_message(session, message_id)
 
-        classification = ai_classify_message(message.subject, context)
-        message.category = classification.category
-        message.ai_confidence = classification.confidence
-
-        extracted = ai_extract_fields(classification.category, context)
-        reply = ai_draft_reply(
-            classification.category, message.sender_name, extracted, context
-        )
-
-        extracted_row = ExtractedFields(
-            message_id=message_id,
-            json_data=extracted.model_dump_json(),
-        )
-        draft = Draft(message_id=message_id, draft_text=reply.reply_text)
-
-        message.status = MessageStatus.needs_review
-        message.updated_at = datetime.utcnow()
-
-        session.add(extracted_row)
-        session.add(draft)
-        session.add(message)
-        session.commit()
-        session.refresh(draft)
-
-        log_action(
-            session,
-            message_id,
-            "processed",
-            "ai",
-            metadata_json=json.dumps(
-                {
-                    "category": classification.category.value,
-                    "confidence": classification.confidence,
-                    "classification_summary": classification.summary,
-                }
-            ),
-        )
-
-        return {
-            "message_id": message_id,
-            "category": classification.category,
-            "confidence": classification.confidence,
-            "classification_summary": classification.summary,
-            "extracted_fields": extracted.model_dump(),
-            "draft_text": reply.reply_text,
-            "status": message.status,
-        }
 
 @app.post("/messages/{message_id}/edit-draft")
 def edit_draft(message_id: int, payload: DraftEditRequest) -> dict:
@@ -1944,6 +2085,7 @@ def approve_message(message_id: int, payload: ApprovalRequest) -> dict:
         session.commit()
         log_action(session, message_id, "approved", payload.actor_name)
         return {"message_id": message_id, "status": message.status}
+
 
 @app.post("/messages/{message_id}/reject")
 def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
@@ -1997,6 +2139,7 @@ def debug_message_context(message_id: int) -> dict:
             ],
             "context_preview": context[:4000],
         }
+
 
 @app.post("/messages/{message_id}/send")
 def send_message(message_id: int, payload: ApprovalRequest) -> dict:
