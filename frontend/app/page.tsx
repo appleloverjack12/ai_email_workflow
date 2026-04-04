@@ -51,6 +51,15 @@ type Message = {
   updated_at: string;
 };
 
+type QueueFilter =
+  | "needs_review"
+  | "new"
+  | "approved"
+  | "sent"
+  | "ignored"
+  | "archived"
+  | "all";
+
 type ProcessedMessage = {
   message_id: number;
   category: MessageCategory;
@@ -162,38 +171,73 @@ export default function Page() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"active" | "all" | MessageStatus>("active");
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("needs_review");
   const [toast, setToast] = useState<Toast | null>(null);
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  
+  const filteredMessages: Message[] = useMemo(() => {
+  return messages.filter((message: Message) => {
+    const q = search.trim().toLowerCase();
 
-  const filteredMessages = useMemo(() => {
-    return messages.filter((message) => {
-      const q = search.trim().toLowerCase();
-      const matchesSearch =
-        q === "" ||
-        message.subject.toLowerCase().includes(q) ||
-        message.sender_email.toLowerCase().includes(q) ||
-        (message.sender_name || "").toLowerCase().includes(q);
+    const matchesSearch =
+      q === "" ||
+      message.subject.toLowerCase().includes(q) ||
+      message.sender_email.toLowerCase().includes(q) ||
+      (message.sender_name || "").toLowerCase().includes(q);
 
-      const matchesStatus =
-        statusFilter === "all"
-          ? true
-          : statusFilter === "active"
-            ? message.status !== "archived" && message.status !== "ignored"
-            : message.status === statusFilter;
-      return matchesSearch && matchesStatus;
-    });
-  }, [messages, search, statusFilter]);
+    const matchesQueue =
+      queueFilter === "all" ? true : message.status === queueFilter;
 
+    return matchesSearch && matchesQueue;
+  });
+}, [messages, search, queueFilter]);
   const stats = useMemo(() => {
+  return {
+    total: messages.length,
+    review: messages.filter((m) => m.status === "needs_review").length,
+    approved: messages.filter((m) => m.status === "approved").length,
+    sent: messages.filter((m) => m.status === "sent").length,
+  };
+}, [messages]);
+  
+  useEffect(() => {
+    if (filteredMessages.length === 0) {
+      setSelectedId(null);
+      setSelectedMessage(null);
+      return;
+    }
+
+    const stillVisible = filteredMessages.some((m: { id: number | null; }) => m.id === selectedId);
+    if (!stillVisible) {
+      setSelectedId(filteredMessages[0].id);
+      setSelectedMessage(filteredMessages[0]);
+    }
+  }, [filteredMessages, selectedId]);
+  const queueTabs: Array<{
+    key: QueueFilter;
+    label: string;
+  }> = [
+      { key: "needs_review", label: "Needs review" },
+      { key: "new", label: "New" },
+      { key: "approved", label: "Ready to send" },
+      { key: "sent", label: "Sent" },
+      { key: "ignored", label: "Ignored" },
+      { key: "archived", label: "Archived" },
+      { key: "all", label: "All" },
+    ];
+
+  const queueCounts = useMemo(() => {
     return {
-      total: messages.length,
-      review: messages.filter((m) => m.status === "needs_review").length,
+      needs_review: messages.filter((m) => m.status === "needs_review").length,
+      new: messages.filter((m) => m.status === "new").length,
       approved: messages.filter((m) => m.status === "approved").length,
       sent: messages.filter((m) => m.status === "sent").length,
+      ignored: messages.filter((m) => m.status === "ignored").length,
+      archived: messages.filter((m) => m.status === "archived").length,
+      all: messages.length,
     };
   }, [messages]);
   const [createForm, setCreateForm] = useState({
@@ -1018,36 +1062,42 @@ export default function Page() {
         <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
           <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-5">
-              <h2 className="text-lg font-semibold">Inbox</h2>
+              <h2 className="text-lg font-semibold">Review queue</h2>
               <p className="mt-1 text-xs text-slate-500">
-                Select a message to review details, generated drafts, and workflow history.
+                {queueTabs.find((tab) => tab.key === queueFilter)?.label} · {filteredMessages.length} message(s)
               </p>
 
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {queueTabs.map((tab) => {
+                    const active = queueFilter === tab.key;
+                    const count = queueCounts[tab.key];
+
+                    return (
+                      <button
+                        key={tab.key}
+                        onClick={() => setQueueFilter(tab.key)}
+                        className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${active
+                            ? "bg-slate-900 text-white shadow-sm"
+                            : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          }`}
+                      >
+                        {tab.label}
+                        <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600"
+                          }`}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
                 <input
                   value={search}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
                   placeholder="Search subject or sender"
                   className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                 />
-
-                <select
-                  value={statusFilter}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                    setStatusFilter(e.target.value as "active" | "all" | MessageStatus)
-                  }
-                  className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
-                >
-                  <option value="active">Active</option>
-                  <option value="all">All</option>
-                  <option value="new">New</option>
-                  <option value="needs_review">Needs review</option>
-                  <option value="ignored">Ignored</option>
-                  <option value="approved">Approved</option>
-                  <option value="sent">Sent</option>
-                  <option value="rejected">Rejected</option>
-                  <option value="archived">Archived</option>
-                </select>
               </div>
             </div>
 
