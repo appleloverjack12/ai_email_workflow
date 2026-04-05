@@ -19,7 +19,8 @@ type MessageStatus =
   | "rejected"
   | "error"
   | "archived"
-  | "ignored";
+  | "ignored"
+  | "waiting_for_info";
 
 type UploadedDocument = {
   id: number;
@@ -56,6 +57,7 @@ type QueueFilter =
   | "new"
   | "approved"
   | "sent"
+  | "waiting_for_info"
   | "ignored"
   | "archived"
   | "all";
@@ -112,6 +114,7 @@ const API_BASE = "http://127.0.0.1:8000";
 const statusStyles: Record<MessageStatus, string> = {
   new: "bg-slate-100 text-slate-700",
   processing: "bg-amber-100 text-amber-700",
+  waiting_for_info: "bg-cyan-100 text-cyan-700",
   needs_review: "bg-blue-100 text-blue-700",
   approved: "bg-emerald-100 text-emerald-700",
   sent: "bg-violet-100 text-violet-700",
@@ -177,32 +180,32 @@ export default function Page() {
   const [uploading, setUploading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  
+
   const filteredMessages: Message[] = useMemo(() => {
-  return messages.filter((message: Message) => {
-    const q = search.trim().toLowerCase();
+    return messages.filter((message: Message) => {
+      const q = search.trim().toLowerCase();
 
-    const matchesSearch =
-      q === "" ||
-      message.subject.toLowerCase().includes(q) ||
-      message.sender_email.toLowerCase().includes(q) ||
-      (message.sender_name || "").toLowerCase().includes(q);
+      const matchesSearch =
+        q === "" ||
+        message.subject.toLowerCase().includes(q) ||
+        message.sender_email.toLowerCase().includes(q) ||
+        (message.sender_name || "").toLowerCase().includes(q);
 
-    const matchesQueue =
-      queueFilter === "all" ? true : message.status === queueFilter;
+      const matchesQueue =
+        queueFilter === "all" ? true : message.status === queueFilter;
 
-    return matchesSearch && matchesQueue;
-  });
-}, [messages, search, queueFilter]);
+      return matchesSearch && matchesQueue;
+    });
+  }, [messages, search, queueFilter]);
   const stats = useMemo(() => {
-  return {
-    total: messages.length,
-    review: messages.filter((m) => m.status === "needs_review").length,
-    approved: messages.filter((m) => m.status === "approved").length,
-    sent: messages.filter((m) => m.status === "sent").length,
-  };
-}, [messages]);
-  
+    return {
+      total: messages.length,
+      review: messages.filter((m) => m.status === "needs_review").length,
+      approved: messages.filter((m) => m.status === "approved").length,
+      sent: messages.filter((m) => m.status === "sent").length,
+    };
+  }, [messages]);
+
   useEffect(() => {
     if (filteredMessages.length === 0) {
       setSelectedId(null);
@@ -216,22 +219,21 @@ export default function Page() {
       setSelectedMessage(filteredMessages[0]);
     }
   }, [filteredMessages, selectedId]);
-  const queueTabs: Array<{
-    key: QueueFilter;
-    label: string;
-  }> = [
-      { key: "needs_review", label: "Needs review" },
-      { key: "new", label: "New" },
-      { key: "approved", label: "Ready to send" },
-      { key: "sent", label: "Sent" },
-      { key: "ignored", label: "Ignored" },
-      { key: "archived", label: "Archived" },
-      { key: "all", label: "All" },
-    ];
+  const queueTabs: { key: QueueFilter; label: string }[] = [
+    { key: "needs_review", label: "Needs review" },
+    { key: "waiting_for_info", label: "Waiting for info" },
+    { key: "new", label: "New" },
+    { key: "approved", label: "Ready to send" },
+    { key: "sent", label: "Sent" },
+    { key: "ignored", label: "Ignored" },
+    { key: "archived", label: "Archived" },
+    { key: "all", label: "All" },
+  ];
 
-  const queueCounts = useMemo(() => {
+  const queueCounts: Record<QueueFilter, number> = useMemo(() => {
     return {
       needs_review: messages.filter((m) => m.status === "needs_review").length,
+      waiting_for_info: messages.filter((m) => m.status === "waiting_for_info").length,
       new: messages.filter((m) => m.status === "new").length,
       approved: messages.filter((m) => m.status === "approved").length,
       sent: messages.filter((m) => m.status === "sent").length,
@@ -849,6 +851,16 @@ export default function Page() {
         actionLabel: "",
       };
     }
+    if (selectedMessage.status === "waiting_for_info") {
+      return {
+        tone: "sky",
+        title: "Waiting for missing information",
+        description:
+          "A follow-up draft has been prepared to request the missing details. Review it and send it when ready.",
+        action: "send" as const,
+        actionLabel: "Send follow-up",
+      };
+    }
 
     if (selectedMessage.status === "sent") {
       return {
@@ -907,6 +919,7 @@ export default function Page() {
     amber: "border-amber-200 bg-amber-50 text-amber-900",
     emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
     violet: "border-violet-200 bg-violet-50 text-violet-900",
+    sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
   };
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white p-6 text-slate-900">
@@ -1078,8 +1091,8 @@ export default function Page() {
                         key={tab.key}
                         onClick={() => setQueueFilter(tab.key)}
                         className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${active
-                            ? "bg-slate-900 text-white shadow-sm"
-                            : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                           }`}
                       >
                         {tab.label}
@@ -1282,7 +1295,10 @@ export default function Page() {
                         {workflowRecommendation.action === "send" && (
                           <button
                             onClick={sendSelectedMessage}
-                            disabled={actionLoading !== null || !selectedMessage || selectedMessage.status !== "approved"}
+                            disabled={
+                              actionLoading !== null ||
+                              !["approved", "waiting_for_info"].includes(selectedMessage.status)
+                            }
                             className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
                           >
                             {workflowRecommendation.actionLabel}

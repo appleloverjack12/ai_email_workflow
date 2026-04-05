@@ -139,6 +139,7 @@ class MessageStatus(str, Enum):
     error = "error"
     archived = "archived"
     ignored = "ignored"
+    waiting_for_info = "waiting_for_info"
 
 
 class ApprovalStatus(str, Enum):
@@ -1138,11 +1139,11 @@ def send_message_via_gmail(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
 
-        if message.status != MessageStatus.approved:
-            raise HTTPException(
-                status_code=400,
-                detail="Only approved messages can be sent",
-            )
+        if message.status not in (MessageStatus.approved, MessageStatus.waiting_for_info):
+         raise HTTPException(
+        status_code=400,
+        detail="Only approved or waiting-for-info messages can be sent",
+    )
 
         draft = get_latest_draft_for_message(session, message_id)
         draft_text = (
@@ -1757,20 +1758,29 @@ def generate_missing_info_draft(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
+
         context = build_message_context(session, message)
         extracted = ai_extract_fields(message.category, context)
         draft_output = ai_draft_missing_info(
-            message.category, message.sender_name, extracted, context
+            message.category,
+            message.sender_name,
+            extracted,
+            context,
         )
 
-        draft = Draft(message_id=message_id, draft_text=draft_output.reply_text)
-        message.status = MessageStatus.needs_review
+        draft = Draft(
+            message_id=message_id,
+            draft_text=draft_output.reply_text,
+        )
+
+        message.status = MessageStatus.waiting_for_info
         message.updated_at = datetime.utcnow()
 
         session.add(draft)
         session.add(message)
         session.commit()
         session.refresh(draft)
+        session.refresh(message)
 
         log_action(
             session,
@@ -1780,6 +1790,8 @@ def generate_missing_info_draft(message_id: int) -> dict:
             metadata_json=json.dumps(
                 {
                     "missing_information": extracted.missing_information,
+                    "reason": "missing_information",
+                    "new_status": "waiting_for_info",
                 }
             ),
         )
