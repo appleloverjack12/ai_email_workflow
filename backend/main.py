@@ -381,6 +381,9 @@ def get_openai_client() -> OpenAI:
         )
     return OpenAI(api_key=api_key)
 
+def get_connected_gmail_address(service) -> str:
+    profile = service.users().getProfile(userId="me").execute()
+    return (profile.get("emailAddress") or "").lower().strip()
 
 def archive_gmail_message(service, gmail_message_id: str) -> dict:
     return (
@@ -393,7 +396,51 @@ def archive_gmail_message(service, gmail_message_id: str) -> dict:
         )
         .execute()
     )
+def append_customer_reply_to_message(
+    session: Session,
+    *,
+    message: Message,
+    new_subject: str,
+    new_sender_name: str | None,
+    new_sender_email: str,
+    new_body_text: str,
+) -> None:
+    existing = (message.body_text or "").strip()
+    incoming = (new_body_text or "").strip()
 
+    separator = "\n\n--- CUSTOMER REPLY ---\n"
+    if incoming:
+        if existing:
+            message.body_text = existing + separator + incoming
+        else:
+            message.body_text = incoming
+
+    if new_subject:
+        message.subject = new_subject
+
+    if new_sender_name:
+        message.sender_name = new_sender_name
+
+    if new_sender_email:
+        message.sender_email = new_sender_email
+
+    if message.status == MessageStatus.waiting_for_info:
+        message.status = MessageStatus.needs_review
+
+    message.updated_at = datetime.utcnow()
+    message.gmail_synced_at = datetime.utcnow()
+
+    session.add(message)
+    session.commit()
+    session.refresh(message)
+def get_local_message_by_gmail_thread(
+    session: Session, gmail_thread_id: str
+) -> Message | None:
+    return session.exec(
+        select(Message)
+        .where(Message.gmail_thread_id == gmail_thread_id)
+        .order_by(Message.created_at.asc())
+    ).first()
 
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
@@ -740,14 +787,31 @@ def extract_plain_text_from_payload(payload: dict | None) -> str:
 
 
 def get_imported_gmail_ids(session: Session) -> set[str]:
-    rows = session.exec(
-        select(Message).where(
-            Message.source == MessageSource.gmail,
-            Message.gmail_message_id.is_not(None),
+    logs = session.exec(
+        select(AuditLog).where(
+            AuditLog.action.in_(
+                [
+                    "gmail_imported",
+                    "customer_reply_synced",
+                ]
+            )
         )
     ).all()
 
-    return {row.gmail_message_id for row in rows if row.gmail_message_id}
+    ids: set[str] = set()
+
+    for log in logs:
+        if not log.metadata_json:
+            continue
+        try:
+            meta = json.loads(log.metadata_json)
+            gmail_id = meta.get("gmail_message_id")
+            if gmail_id:
+                ids.add(gmail_id)
+        except Exception:
+            pass
+
+    return ids
 
 
 def get_model_name() -> str:
@@ -1475,6 +1539,8 @@ def clear_local_messages() -> dict:
 @app.post("/gmail/sync")
 def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
     service = get_gmail_service()
+    connected_gmail_address = get_connected_gmail_address(service)
+    
 
     gmail_list = (
         service.users()
@@ -1522,8 +1588,11 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
             subject = extract_header(headers, "Subject") or "(No subject)"
             from_header = extract_header(headers, "From") or ""
             sender_name, sender_email = parseaddr(from_header)
+            gmail_thread_id = gmail_message.get("threadId")
+            sender_email_normalized = (sender_email or "").lower().strip()
+            is_from_me = sender_email_normalized == connected_gmail_address
 
-            if not sender_email:
+            if not sender_email_normalized:
                 skipped_count += 1
                 continue
 
@@ -1533,6 +1602,63 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
             if not body_text or len(body_text) > 4000 or body_text.count("http") > 5:
                 body_text = snippet
 
+            # 1) If this Gmail thread already exists locally, treat this as a reply
+            existing_thread_message = None
+            if gmail_thread_id:
+                existing_thread_message = get_local_message_by_gmail_thread(
+                    session, gmail_thread_id
+                )
+
+            if existing_thread_message and not is_from_me:
+                was_waiting_for_info = (
+                    existing_thread_message.status == MessageStatus.waiting_for_info
+                )
+
+                append_customer_reply_to_message(
+                    session,
+                    message=existing_thread_message,
+                    new_subject=subject,
+                    new_sender_name=sender_name or None,
+                    new_sender_email=sender_email,
+                    new_body_text=body_text,
+                )
+
+                log_action(
+                    session,
+                    existing_thread_message.id,
+                    "customer_reply_synced",
+                    "gmail_sync",
+                    metadata_json=json.dumps(
+                        {
+                            "gmail_message_id": gmail_message_id,
+                            "thread_id": gmail_thread_id,
+                            "reopened_for_review": was_waiting_for_info,
+                        }
+                    ),
+                )
+
+                existing_gmail_ids.add(gmail_message_id)
+                skipped_count += 1
+                continue
+            if existing_thread_message and is_from_me:
+                log_action(
+        session,
+        existing_thread_message.id,
+        "own_thread_message_skipped",
+        "gmail_sync",
+        metadata_json=json.dumps(
+            {
+                "gmail_message_id": gmail_message_id,
+                "thread_id": gmail_thread_id,
+            }
+        ),
+    )
+
+            existing_gmail_ids.add(gmail_message_id)
+            skipped_count += 1
+            continue
+
+            # 2) Otherwise create a new local message
             should_ignore, ignore_reason = should_auto_ignore_message(
                 subject=subject,
                 sender_email=sender_email,
@@ -1546,7 +1672,7 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                 body_text=body_text,
                 source=MessageSource.gmail,
                 gmail_message_id=gmail_message_id,
-                gmail_thread_id=gmail_message.get("threadId"),
+                gmail_thread_id=gmail_thread_id,
                 gmail_synced_at=datetime.utcnow(),
                 has_attachments=False,
                 status=MessageStatus.ignored if should_ignore else MessageStatus.new,
@@ -1576,7 +1702,7 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                 metadata_json=json.dumps(
                     {
                         "gmail_message_id": gmail_message_id,
-                        "thread_id": gmail_message.get("threadId"),
+                        "thread_id": gmail_thread_id,
                         "attachment_count": attachment_count,
                     }
                 ),
