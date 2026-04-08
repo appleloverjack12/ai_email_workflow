@@ -167,6 +167,12 @@ class Message(SQLModel, table=True):
     gmail_thread_id: Optional[str] = Field(default=None, index=True)
     has_attachments: bool = False
 
+class InternalNote(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="message.id", index=True)
+    author: str
+    note_text: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Document(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

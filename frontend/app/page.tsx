@@ -54,13 +54,59 @@ type Message = {
 
 type QueueFilter =
   | "needs_review"
+  | "waiting_for_info"
   | "new"
   | "approved"
   | "sent"
-  | "waiting_for_info"
   | "ignored"
   | "archived"
   | "all";
+
+const queueConfig: Record<
+  QueueFilter,
+  { label: string; description: string; emptyMessage: string }
+> = {
+  needs_review: {
+    label: "Needs review",
+    description: "Messages that need human review before the next step.",
+    emptyMessage: "No messages waiting for review.",
+  },
+  waiting_for_info: {
+    label: "Waiting for info",
+    description: "Messages waiting for customer details before you can continue.",
+    emptyMessage: "No messages are waiting for more information.",
+  },
+  new: {
+    label: "New",
+    description: "Freshly imported or created messages that have not been processed yet.",
+    emptyMessage: "No new messages.",
+  },
+  approved: {
+    label: "Ready to send",
+    description: "Approved messages that are ready to be sent.",
+    emptyMessage: "No approved messages ready to send.",
+  },
+  sent: {
+    label: "Sent",
+    description: "Completed outbound replies already sent.",
+    emptyMessage: "No sent messages yet.",
+  },
+  ignored: {
+    label: "Ignored",
+    description: "Low-priority or auto-triaged messages kept out of the active workflow.",
+    emptyMessage: "No ignored messages.",
+  },
+  archived: {
+    label: "Archived",
+    description: "Finished items removed from the active queue.",
+    emptyMessage: "No archived messages.",
+  },
+  all: {
+    label: "All",
+    description: "Every message in the system.",
+    emptyMessage: "No messages yet.",
+  },
+};
 
 type ProcessedMessage = {
   message_id: number;
@@ -182,7 +228,7 @@ export default function Page() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredMessages: Message[] = useMemo(() => {
-    return messages.filter((message: Message) => {
+    return messages.filter((message) => {
       const q = search.trim().toLowerCase();
 
       const matchesSearch =
@@ -213,7 +259,7 @@ export default function Page() {
       return;
     }
 
-    const stillVisible = filteredMessages.some((m: { id: number | null; }) => m.id === selectedId);
+    const stillVisible = filteredMessages.some((m) => m.id === selectedId);
     if (!stillVisible) {
       setSelectedId(filteredMessages[0].id);
       setSelectedMessage(filteredMessages[0]);
@@ -1034,7 +1080,9 @@ export default function Page() {
                 className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
                 placeholder="client@example.com"
               />
+
             </div>
+
 
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm font-medium text-slate-700">Sender name</label>
@@ -1077,34 +1125,35 @@ export default function Page() {
             <div className="border-b border-slate-200 p-5">
               <h2 className="text-lg font-semibold">Review queue</h2>
               <p className="mt-1 text-xs text-slate-500">
-                {queueTabs.find((tab) => tab.key === queueFilter)?.label} · {filteredMessages.length} message(s)
+                {queueConfig[queueFilter].description}
               </p>
 
-              <div className="mt-4 space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {queueTabs.map((tab) => {
-                    const active = queueFilter === tab.key;
-                    const count = queueCounts[tab.key];
+              <div className="mt-4 flex flex-wrap gap-2">
+                {(Object.keys(queueConfig) as QueueFilter[]).map((key) => {
+                  const active = queueFilter === key;
 
-                    return (
-                      <button
-                        key={tab.key}
-                        onClick={() => setQueueFilter(tab.key)}
-                        className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${active
-                          ? "bg-slate-900 text-white shadow-sm"
-                          : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setQueueFilter(key)}
+                      className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${active
+                        ? "bg-slate-900 text-white shadow-sm"
+                        : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                    >
+                      {queueConfig[key].label}
+                      <span
+                        className={`ml-2 rounded-full px-2 py-0.5 text-xs ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600"
                           }`}
                       >
-                        {tab.label}
-                        <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600"
-                          }`}>
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                        {queueCounts[key]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
 
+              <div className="mt-4">
                 <input
                   value={search}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
@@ -1139,15 +1188,24 @@ export default function Page() {
                       </div>
                       <span className={active ? "text-slate-300" : "text-slate-400"}>✉️</span>
                     </div>
+                    <p className={`mt-2 text-xs ${active ? "text-slate-300" : "text-slate-500"}`}>
+                      {message.status === "needs_review" && "Needs human review"}
+                      {message.status === "waiting_for_info" && "Waiting on customer reply"}
+                      {message.status === "approved" && "Ready to send"}
+                      {message.status === "sent" && "Reply already sent"}
+                      {message.status === "ignored" && "Ignored by workflow"}
+                      {message.status === "archived" && "Archived"}
+                      {message.status === "new" && "New message"}
+                    </p>
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Badge
                         text={message.status}
-                        className={active ? "bg-white/15 text-white" : statusStyles[message.status]}
+                        className={active ? "bg-white/15 text-white" : statusStyles[message.status as MessageStatus]}
                       />
                       <Badge
                         text={message.category}
-                        className={active ? "bg-white/15 text-white" : categoryStyles[message.category]}
+                        className={active ? "bg-white/15 text-white" : categoryStyles[message.category as MessageCategory]}
                       />
                       <Badge
                         text={message.source === "gmail" ? "gmail" : "manual"}
@@ -1170,7 +1228,7 @@ export default function Page() {
 
               {filteredMessages.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500">
-                  No messages match your filters.
+                  {queueConfig[queueFilter].emptyMessage}
                 </div>
               )}
             </div>
@@ -1187,10 +1245,31 @@ export default function Page() {
                     <h2 className="mt-1 text-2xl font-semibold">
                       {selectedMessage?.subject || "Select a message"}
                     </h2>
+
                     {selectedMessage && (
-                      <p className="mt-2 text-sm text-slate-600">
-                        {selectedMessage.sender_name || "Unknown sender"} · {selectedMessage.sender_email}
-                      </p>
+                      <>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Queue: {queueConfig[
+                            (selectedMessage.status === "waiting_for_info"
+                              ? "waiting_for_info"
+                              : selectedMessage.status === "needs_review"
+                                ? "needs_review"
+                                : selectedMessage.status === "approved"
+                                  ? "approved"
+                                  : selectedMessage.status === "sent"
+                                    ? "sent"
+                                    : selectedMessage.status === "ignored"
+                                      ? "ignored"
+                                      : selectedMessage.status === "archived"
+                                        ? "archived"
+                                        : "new") as QueueFilter
+                          ].label}
+                        </p>
+
+                        <p className="mt-2 text-sm text-slate-600">
+                          {selectedMessage.sender_name || "Unknown sender"} · {selectedMessage.sender_email}
+                        </p>
+                      </>
                     )}
                   </div>
 
