@@ -247,7 +247,17 @@ class DraftEditRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     actor_name: str
 
+class InternalNoteCreate(SQLModel):
+    author: str
+    note_text: str
 
+
+class InternalNoteRead(SQLModel):
+    id: int
+    message_id: int
+    author: str
+    note_text: str
+    created_at: datetime
 # --- Structured AI output schemas ---
 class ClassificationOutput(BaseModel):
     category: MessageCategory
@@ -1175,6 +1185,52 @@ def ignore_message(message_id: int) -> dict:
             "status": message.status,
         }
 
+@app.get("/messages/{message_id}/notes", response_model=list[InternalNoteRead])
+def list_message_notes(message_id: int) -> list[InternalNote]:
+    with Session(engine, expire_on_commit=False) as session:
+        get_message_or_404(session, message_id)
+
+        notes = session.exec(
+            select(InternalNote)
+            .where(InternalNote.message_id == message_id)
+            .order_by(InternalNote.created_at.desc())
+        ).all()
+
+        return notes
+
+
+@app.post("/messages/{message_id}/notes", response_model=InternalNoteRead)
+def create_message_note(message_id: int, payload: InternalNoteCreate) -> InternalNote:
+    with Session(engine, expire_on_commit=False) as session:
+        get_message_or_404(session, message_id)
+
+        note = InternalNote(
+            message_id=message_id,
+            author=payload.author.strip() or "Jakov",
+            note_text=payload.note_text.strip(),
+        )
+
+        if not note.note_text:
+            raise HTTPException(status_code=400, detail="Note text cannot be empty")
+
+        session.add(note)
+        session.commit()
+        session.refresh(note)
+
+        log_action(
+            session,
+            message_id,
+            "internal_note_created",
+            payload.author.strip() or "Jakov",
+            metadata_json=json.dumps(
+                {
+                    "note_id": note.id,
+                    "preview": note.note_text[:120],
+                }
+            ),
+        )
+
+        return note
 
 @app.post("/messages/{message_id}/unignore")
 def unignore_message(message_id: int) -> dict:

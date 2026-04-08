@@ -52,6 +52,14 @@ type Message = {
   updated_at: string;
 };
 
+type InternalNote = {
+  id: number;
+  message_id: number;
+  author: string;
+  note_text: string;
+  created_at: string;
+};
+
 type QueueFilter =
   | "needs_review"
   | "waiting_for_info"
@@ -226,6 +234,9 @@ export default function Page() {
   const [uploading, setUploading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [notes, setNotes] = useState<InternalNote[]>([]);
+  const [newNote, setNewNote] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
 
   const filteredMessages: Message[] = useMemo(() => {
     return messages.filter((message) => {
@@ -319,7 +330,16 @@ export default function Page() {
     }
   }
 
-
+  async function fetchMessageNotes(messageId: number) {
+    try {
+      const response = await fetch(`${API_BASE}/messages/${messageId}/notes`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to load notes");
+      setNotes(data);
+    } catch (error) {
+      setNotes([]);
+    }
+  }
   async function ignoreSelectedMessage() {
     if (!selectedMessage) return;
     setActionLoading("ignore");
@@ -348,7 +368,42 @@ export default function Page() {
       setActionLoading(null);
     }
   }
+  async function addInternalNote() {
+    if (!selectedMessage || !newNote.trim()) return;
+    setSavingNote(true);
 
+    try {
+      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/notes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          author: "Jakov",
+          note_text: newNote.trim(),
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to save note");
+
+      setNewNote("");
+      await fetchMessageNotes(selectedMessage.id);
+      await fetchAuditLogs(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Internal note added.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setSavingNote(false);
+    }
+  }
   async function unignoreSelectedMessage() {
     if (!selectedMessage) return;
     setActionLoading("unignore");
@@ -697,6 +752,7 @@ export default function Page() {
       setEditedDraft(draftText ?? "");
       await fetchDocuments(messageId);
       await fetchAuditLogs(messageId);
+      await fetchMessageNotes(messageId);
     } catch (error) {
       setToast({
         type: "error",
@@ -704,6 +760,8 @@ export default function Page() {
       });
     } finally {
       setDetailLoading(false);
+      setNewNote("");
+      setNotes([]);
     }
   }
   async function fetchDocuments(messageId: number) {
@@ -743,6 +801,7 @@ export default function Page() {
       });
     } finally {
       setActionLoading(null);
+ 
     }
   }
 
@@ -1669,7 +1728,53 @@ export default function Page() {
                   )}
                 </div>
               </div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-lg font-semibold">Internal notes</h3>
 
+                <div className="mt-4 space-y-4">
+                  <div className="space-y-3">
+                    <textarea
+                      value={newNote}
+                      onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNewNote(e.target.value)}
+                      placeholder="Add an internal note for your team..."
+                      className="min-h-[120px] w-full rounded-2xl border border-slate-300 p-3 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                    />
+
+                    <div className="flex justify-end">
+                      <button
+                        onClick={addInternalNote}
+                        disabled={!selectedMessage || !newNote.trim() || savingNote}
+                        className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {savingNote ? "Saving..." : "Add note"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {notes.length > 0 ? (
+                    <div className="space-y-3">
+                      {notes.map((note) => (
+                        <div key={note.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-slate-800">{note.author}</p>
+                              <p className="mt-1 text-xs text-slate-500">{formatDate(note.created_at)}</p>
+                            </div>
+                          </div>
+
+                          <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">
+                            {note.note_text}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                      No internal notes for this message yet.
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h3 className="text-lg font-semibold">Audit log</h3>
 
