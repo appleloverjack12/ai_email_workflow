@@ -1,30 +1,34 @@
 from __future__ import annotations
-from fastapi.middleware.cors import CORSMiddleware
+import base64
 import json
 import os
-import base64
+import re
 import secrets
-from email.utils import parseaddr
-from googleapiclient.discovery import build
-from googleapiclient.discovery import build
 from datetime import datetime
+from email.message import EmailMessage
+from email.utils import parseaddr
 from enum import Enum
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
+import fitz
+import pytesseract
+from PIL import Image
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, EmailStr
-from sqlmodel import Field, Session, SQLModel, create_engine, select
-from io import BytesIO
-from pypdf import PdfReader
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, HTMLResponse
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-from fastapi.responses import RedirectResponse, HTMLResponse
-from email.message import EmailMessage
-from io import BytesIO
-import re
+from googleapiclient.discovery import build
+from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, EmailStr
+from pypdf import PdfReader
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+import io
+
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 load_dotenv()
 
@@ -466,6 +470,35 @@ def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | N
     ).first()
 
 
+
+def ocr_image_bytes(file_bytes: bytes) -> str | None:
+    try:
+        image = Image.open(io.BytesIO(file_bytes))
+        text = pytesseract.image_to_string(image).strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def ocr_pdf_bytes(file_bytes: bytes) -> str | None:
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages_text: list[str] = []
+
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_bytes = pix.tobytes("png")
+            image = Image.open(io.BytesIO(img_bytes))
+            page_text = pytesseract.image_to_string(image).strip()
+            if page_text:
+                pages_text.append(page_text)
+
+        combined = "\n\n".join(pages_text).strip()
+        return combined or None
+    except Exception:
+        return None
+
+
 def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
     return session.exec(
         select(Draft)
@@ -544,19 +577,27 @@ def sanitize_filename(filename: str) -> str:
 
 
 def extract_text_from_file_bytes(
-    filename: str, mime_type: str | None, file_bytes: bytes
+    filename: str,
+    mime_type: str | None,
+    file_bytes: bytes,
 ) -> str | None:
     lower_name = filename.lower()
     mime_type = mime_type or ""
 
     try:
         if lower_name.endswith(".pdf") or mime_type == "application/pdf":
-            reader = PdfReader(BytesIO(file_bytes))
+            reader = PdfReader(io.BytesIO(file_bytes))
             pages: list[str] = []
+
             for page in reader.pages:
                 pages.append(page.extract_text() or "")
+
             text = "\n".join(pages).strip()
-            return text or None
+
+            if text:
+                return text
+
+            return ocr_pdf_bytes(file_bytes)
 
         if (
             lower_name.endswith(".txt")
@@ -566,6 +607,16 @@ def extract_text_from_file_bytes(
         ):
             text = file_bytes.decode("utf-8", errors="ignore").strip()
             return text or None
+
+        if (
+            lower_name.endswith(".png")
+            or lower_name.endswith(".jpg")
+            or lower_name.endswith(".jpeg")
+            or lower_name.endswith(".webp")
+            or mime_type.startswith("image/")
+        ):
+            return ocr_image_bytes(file_bytes)
+
     except Exception:
         return None
 
@@ -1599,10 +1650,9 @@ def clear_local_messages() -> dict:
 
 
 @app.post("/gmail/sync")
-def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
+def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
     service = get_gmail_service()
     connected_gmail_address = get_connected_gmail_address(service)
-    
 
     gmail_list = (
         service.users()
@@ -1610,17 +1660,21 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
         .list(
             userId="me",
             labelIds=["INBOX"],
-            q="category:primary -from:noreply -from:no-reply -from:notifications -from:updates",
+            q="in:inbox",
             maxResults=max_results,
         )
         .execute()
     )
 
     message_refs = gmail_list.get("messages", []) or []
+    print(f"[GMAIL SYNC DEBUG] fetched_refs={len(message_refs)}")
 
     imported_count = 0
     processed_count = 0
     skipped_count = 0
+    duplicate_count = 0
+    thread_reply_updated_count = 0
+    own_thread_skipped_count = 0
     imported_attachment_count = 0
     imported_ids: list[int] = []
 
@@ -1634,6 +1688,7 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                 continue
 
             if gmail_message_id in existing_gmail_ids:
+                duplicate_count += 1
                 skipped_count += 1
                 continue
 
@@ -1650,27 +1705,38 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
             subject = extract_header(headers, "Subject") or "(No subject)"
             from_header = extract_header(headers, "From") or ""
             sender_name, sender_email = parseaddr(from_header)
-            gmail_thread_id = gmail_message.get("threadId")
             sender_email_normalized = (sender_email or "").lower().strip()
+
+            gmail_thread_id = gmail_message.get("threadId")
             is_from_me = sender_email_normalized == connected_gmail_address
 
             if not sender_email_normalized:
                 skipped_count += 1
+                print(
+    f"[GMAIL SYNC DEBUG] gmail_message_id={gmail_message_id} "
+    f"thread_id={gmail_thread_id} sender={sender_email_normalized} "
+    f"is_from_me={is_from_me} subject={subject}"
+)
                 continue
-
+            print(
+    f"[GMAIL SYNC DEBUG] gmail_message_id={gmail_message_id} "
+    f"thread_id={gmail_thread_id} sender={sender_email_normalized} "
+    f"is_from_me={is_from_me} subject={subject}"
+)
             body_text = extract_plain_text_from_payload(payload).strip()
             snippet = gmail_message.get("snippet", "") or ""
 
             if not body_text or len(body_text) > 4000 or body_text.count("http") > 5:
                 body_text = snippet
 
-            # 1) If this Gmail thread already exists locally, treat this as a reply
+            # Existing local message in same Gmail thread
             existing_thread_message = None
             if gmail_thread_id:
                 existing_thread_message = get_local_message_by_gmail_thread(
                     session, gmail_thread_id
                 )
 
+            # External reply in existing thread -> reopen workflow
             if existing_thread_message and not is_from_me:
                 was_waiting_for_info = (
                     existing_thread_message.status == MessageStatus.waiting_for_info
@@ -1685,6 +1751,20 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                     new_body_text=body_text,
                 )
 
+                reply_attachment_count = import_gmail_attachments_for_message(
+                    service,
+                    session,
+                    gmail_message=gmail_message,
+                    local_message_id=existing_thread_message.id,
+                )
+
+                if reply_attachment_count > 0:
+                    existing_thread_message.has_attachments = True
+                    existing_thread_message.updated_at = datetime.utcnow()
+                    session.add(existing_thread_message)
+                    session.commit()
+                    session.refresh(existing_thread_message)
+
                 log_action(
                     session,
                     existing_thread_message.id,
@@ -1695,32 +1775,35 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                             "gmail_message_id": gmail_message_id,
                             "thread_id": gmail_thread_id,
                             "reopened_for_review": was_waiting_for_info,
+                            "reply_attachment_count": reply_attachment_count,
                         }
                     ),
                 )
 
                 existing_gmail_ids.add(gmail_message_id)
-                skipped_count += 1
+                thread_reply_updated_count += 1
                 continue
+
+            # Our own sent message in existing thread -> skip
             if existing_thread_message and is_from_me:
                 log_action(
-        session,
-        existing_thread_message.id,
-        "own_thread_message_skipped",
-        "gmail_sync",
-        metadata_json=json.dumps(
-            {
-                "gmail_message_id": gmail_message_id,
-                "thread_id": gmail_thread_id,
-            }
-        ),
-    )
+                    session,
+                    existing_thread_message.id,
+                    "own_thread_message_skipped",
+                    "gmail_sync",
+                    metadata_json=json.dumps(
+                        {
+                            "gmail_message_id": gmail_message_id,
+                            "thread_id": gmail_thread_id,
+                        }
+                    ),
+                )
 
-            existing_gmail_ids.add(gmail_message_id)
-            skipped_count += 1
-            continue
+                existing_gmail_ids.add(gmail_message_id)
+                own_thread_skipped_count += 1
+                continue
 
-            # 2) Otherwise create a new local message
+            # Brand new local message
             should_ignore, ignore_reason = should_auto_ignore_message(
                 subject=subject,
                 sender_email=sender_email,
@@ -1798,12 +1881,15 @@ def gmail_sync(max_results: int = 5, auto_process: bool = False) -> dict:
                     )
 
     return {
-        "imported_count": imported_count,
-        "skipped_count": skipped_count,
-        "imported_attachment_count": imported_attachment_count,
-        "processed_count": processed_count,
-        "imported_message_ids": imported_ids,
-    }
+    "imported_count": imported_count,
+    "processed_count": processed_count,
+    "imported_attachment_count": imported_attachment_count,
+    "thread_reply_updated_count": thread_reply_updated_count,
+    "own_thread_skipped_count": own_thread_skipped_count,
+    "duplicate_count": duplicate_count,
+    "skipped_count": skipped_count,
+    "imported_message_ids": imported_ids,
+}
 
 
 @app.get("/auth/google/start")
