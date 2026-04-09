@@ -30,6 +30,14 @@ type UploadedDocument = {
   created_at: string;
 };
 
+type AuthUser = {
+  id: number;
+  email: string;
+  full_name: string;
+  role: "admin" | "reviewer";
+  is_active: boolean;
+};
+
 type DocumentsResponse = {
   message_id: number;
   documents: UploadedDocument[];
@@ -237,7 +245,10 @@ export default function Page() {
   const [notes, setNotes] = useState<InternalNote[]>([]);
   const [newNote, setNewNote] = useState("");
   const [savingNote, setSavingNote] = useState(false);
-
+  const [token, setToken] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [loggingIn, setLoggingIn] = useState(false);
   const filteredMessages: Message[] = useMemo(() => {
     return messages.filter((message) => {
       const q = search.trim().toLowerCase();
@@ -262,6 +273,7 @@ export default function Page() {
       sent: messages.filter((m) => m.status === "sent").length,
     };
   }, [messages]);
+
 
   useEffect(() => {
     if (filteredMessages.length === 0) {
@@ -309,7 +321,7 @@ export default function Page() {
   async function fetchMessages() {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/messages`);
+      const response = await authFetch(`${API_BASE}/messages`);
       if (!response.ok) throw new Error("Failed to load messages");
       const data: Message[] = await response.json();
       const sorted = [...data].sort(
@@ -330,9 +342,10 @@ export default function Page() {
     }
   }
 
+
   async function fetchMessageNotes(messageId: number) {
     try {
-      const response = await fetch(`${API_BASE}/messages/${messageId}/notes`);
+      const response = await authFetch(`${API_BASE}/messages/${messageId}/notes`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to load notes");
       setNotes(data);
@@ -345,7 +358,7 @@ export default function Page() {
     setActionLoading("ignore");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/ignore`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/ignore`, {
         method: "POST",
       });
 
@@ -373,7 +386,7 @@ export default function Page() {
     setSavingNote(true);
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/notes`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/notes`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -409,7 +422,7 @@ export default function Page() {
     setActionLoading("unignore");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unignore`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/unignore`, {
         method: "POST",
       });
 
@@ -442,7 +455,7 @@ export default function Page() {
     setActionLoading("clear-local");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/clear-local`, {
+      const response = await authFetch(`${API_BASE}/messages/clear-local`, {
         method: "DELETE",
       });
 
@@ -476,7 +489,7 @@ export default function Page() {
     setActionLoading("archive");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/archive`, {
         method: "POST",
       });
 
@@ -513,7 +526,7 @@ export default function Page() {
     setActionLoading("unarchive");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/unarchive`, {
         method: "POST",
       });
 
@@ -541,7 +554,7 @@ export default function Page() {
     setActionLoading(autoProcess ? "gmail-sync-ai" : "gmail-sync");
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE}/gmail/sync?max_results=10&auto_process=${autoProcess ? "true" : "false"}`,
         {
           method: "POST",
@@ -556,8 +569,8 @@ export default function Page() {
       setToast({
         type: "success",
         message: autoProcess
-          ? `Imported ${data.imported_count} message(s) and auto-processed ${data.processed_count}.`
-          : `Imported ${data.imported_count} Gmail message(s).`,
+          ? `Imported ${data.imported_count}, updated ${data.thread_reply_updated_count ?? 0} replies, ignored ${data.auto_ignored_count ?? 0}, auto-processed ${data.processed_count}.`
+          : `Imported ${data.imported_count}, updated ${data.thread_reply_updated_count ?? 0} replies, ignored ${data.auto_ignored_count ?? 0}.`,
       });
     } catch (error) {
       setToast({
@@ -585,7 +598,7 @@ export default function Page() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/documents`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/documents`, {
         method: "POST",
         body: formData,
       });
@@ -620,7 +633,7 @@ export default function Page() {
     setCreating(true);
 
     try {
-      const response = await fetch(`${API_BASE}/messages`, {
+      const response = await authFetch(`${API_BASE}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(createForm),
@@ -660,7 +673,7 @@ export default function Page() {
     setActionLoading("missing-info");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/draft-missing-info`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/draft-missing-info`, {
         method: "POST",
       });
 
@@ -682,7 +695,7 @@ export default function Page() {
   }
   async function fetchAuditLogs(messageId: number) {
     try {
-      const response = await fetch(`${API_BASE}/messages/${messageId}/audit-logs`);
+      const response = await authFetch(`${API_BASE}/messages/${messageId}/audit-logs`);
       if (!response.ok) throw new Error("Failed to load audit logs");
 
       const data: AuditLogsResponse = await response.json();
@@ -699,7 +712,7 @@ export default function Page() {
     setDetailLoading(true);
 
     try {
-      const messageRes = await fetch(`${API_BASE}/messages/${messageId}`);
+      const messageRes = await authFetch(`${API_BASE}/messages/${messageId}`);
       if (!messageRes.ok) throw new Error("Failed to load message details");
 
       const messageData: Message = await messageRes.json();
@@ -710,7 +723,7 @@ export default function Page() {
       let classificationSummary: string | undefined = undefined;
 
       try {
-        const extractionRes = await fetch(`${API_BASE}/messages/${messageId}/latest-extraction`);
+        const extractionRes = await authFetch(`${API_BASE}/messages/${messageId}/latest-extraction`);
         if (extractionRes.ok) {
           const extractionData: LatestExtractionResponse = await extractionRes.json();
           if (extractionData.extracted_fields) {
@@ -724,7 +737,7 @@ export default function Page() {
       }
 
       try {
-        const draftRes = await fetch(`${API_BASE}/messages/${messageId}/latest-draft`);
+        const draftRes = await authFetch(`${API_BASE}/messages/${messageId}/latest-draft`);
         if (draftRes.ok) {
           const draftData: LatestDraftResponse = await draftRes.json();
           if (draftData.draft_text) {
@@ -766,7 +779,7 @@ export default function Page() {
   }
   async function fetchDocuments(messageId: number) {
     try {
-      const response = await fetch(`${API_BASE}/messages/${messageId}/documents`);
+      const response = await authFetch(`${API_BASE}/messages/${messageId}/documents`);
       if (!response.ok) throw new Error("Failed to load documents");
 
       const data: DocumentsResponse = await response.json();
@@ -783,7 +796,7 @@ export default function Page() {
     if (!selectedMessage) return;
     setActionLoading("approve");
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/approve`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actor_name: "Jakov" }),
@@ -801,7 +814,7 @@ export default function Page() {
       });
     } finally {
       setActionLoading(null);
- 
+
     }
   }
 
@@ -809,7 +822,7 @@ export default function Page() {
     if (!selectedMessage) return;
     setActionLoading("reject");
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/reject`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actor_name: "Jakov" }),
@@ -837,7 +850,7 @@ export default function Page() {
     setActionLoading("send");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/send-gmail`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/send-gmail`, {
         method: "POST",
       });
 
@@ -861,7 +874,7 @@ export default function Page() {
     setActionLoading("process");
 
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/process`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/process`, {
         method: "POST",
       });
 
@@ -882,11 +895,73 @@ export default function Page() {
       setActionLoading(null);
     }
   }
+  async function bootstrapAdmin() {
+    setLoggingIn(true);
+    try {
+      const response = await fetch(`${API_BASE}/auth/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginForm.email,
+          full_name: "Jakov",
+          password: loginForm.password,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to create admin");
+
+      setToast({ type: "success", message: "Admin account created. Now log in." });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  async function login() {
+    setLoggingIn(true);
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginForm),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Login failed");
+
+      localStorage.setItem("auth_token", data.access_token);
+      localStorage.setItem("auth_user", JSON.stringify(data.user));
+
+      setToken(data.access_token);
+      setAuthUser(data.user);
+
+      setToast({ type: "success", message: "Logged in." });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("auth_user");
+    setToken(null);
+    setAuthUser(null);
+  }
   async function saveEditedDraft() {
     if (!selectedMessage || !editedDraft.trim()) return;
     setActionLoading("edit");
     try {
-      const response = await fetch(`${API_BASE}/messages/${selectedMessage.id}/edit-draft`, {
+      const response = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/edit-draft`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -924,6 +999,34 @@ export default function Page() {
     return () => clearTimeout(timer);
   }, [toast]);
   const quoteFields = processedData?.extracted_fields ?? {};
+  useEffect(() => {
+    const savedToken = localStorage.getItem("auth_token");
+    const savedUser = localStorage.getItem("auth_user");
+
+    if (savedToken) setToken(savedToken);
+    if (savedUser) setAuthUser(JSON.parse(savedUser));
+  }, []);
+
+  async function authFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+    const headers = new Headers(init.headers || {});
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+
+    const response = await fetch(input, {
+      ...init,
+      headers,
+    });
+
+    if (response.status === 401) {
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("auth_user");
+      setToken(null);
+      setAuthUser(null);
+    }
+
+    return response;
+  }
 
   const quoteSummary = {
     requested_service: quoteFields["requested_service"],
@@ -973,6 +1076,16 @@ export default function Page() {
         title: "Completed",
         description: "This message has already been sent. No further action is needed.",
         action: null as null | "process" | "missing-info" | "approve" | "send",
+        actionLabel: "",
+      };
+    }
+    if (selectedMessage.status === "ignored") {
+      return {
+        tone: "slate",
+        title: "Filtered from the active workflow",
+        description:
+          "This message was identified as low-priority or promotional. Restore it if it turns out to be relevant.",
+        action: null,
         actionLabel: "",
       };
     }
@@ -1026,6 +1139,63 @@ export default function Page() {
     violet: "border-violet-200 bg-violet-50 text-violet-900",
     sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
   };
+  if (!token || !authUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 p-6">
+        <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h1 className="text-2xl font-semibold">Sign in</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Log in to access the email workflow dashboard.
+          </p>
+
+          <div className="mt-6 space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
+              <input
+                value={loginForm.email}
+                onChange={(e) =>
+                  setLoginForm((prev) => ({ ...prev, email: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                placeholder="you@example.com"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) =>
+                  setLoginForm((prev) => ({ ...prev, password: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                placeholder="••••••••"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={login}
+                disabled={loggingIn}
+                className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                {loggingIn ? "Signing in..." : "Sign in"}
+              </button>
+
+              <button
+                onClick={bootstrapAdmin}
+                disabled={loggingIn}
+                className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+              >
+                Create first admin
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white p-6 text-slate-900">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -1046,44 +1216,62 @@ export default function Page() {
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <button
-                  onClick={fetchMessages}
-                  disabled={loading}
-                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/15 disabled:opacity-50"
-                >
-                  {loading ? "Refreshing..." : "Refresh inbox"}
-                </button>
+                <div className="flex flex-col gap-3 lg:items-end">
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-2xl bg-white/10 px-3 py-2 text-sm text-white">
+                      {authUser.full_name} · {authUser.role}
+                    </div>
+                    <button
+                      onClick={logout}
+                      className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
+                    >
+                      Logout
+                    </button>
+                  </div>
 
-                <button
-                  onClick={clearLocalInbox}
-                  disabled={actionLoading !== null}
-                  className="rounded-2xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
-                >
-                  Clear inbox
-                </button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={fetchMessages}
+                      disabled={loading}
+                      className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/15 disabled:opacity-50"
+                    >
+                      {loading ? "Refreshing..." : "Refresh inbox"}
+                    </button>
 
-                <button
-                  onClick={() => syncGmailInbox(false)}
-                  disabled={actionLoading !== null}
-                  className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
-                >
-                  Sync Gmail
-                </button>
-                <button
-                  onClick={() => syncGmailInbox(true)}
-                  disabled={actionLoading !== null}
-                  className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  Sync + AI
-                </button>
+                    <button
+                      onClick={clearLocalInbox}
+                      disabled={actionLoading !== null}
+                      className="rounded-2xl border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Clear inbox
+                    </button>
 
-                <button
-                  onClick={processSelectedMessage}
-                  disabled={!selectedMessage || actionLoading !== null}
-                  className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-black disabled:opacity-50"
-                >
-                  Process with AI
-                </button>
+                    <button
+                      onClick={() => syncGmailInbox(false)}
+                      disabled={actionLoading !== null}
+                      className="rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      Sync Gmail
+                    </button>
+
+                    <button
+                      onClick={() => syncGmailInbox(true)}
+                      disabled={actionLoading !== null}
+                      className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      Sync + AI
+                    </button>
+
+                    <button
+                      onClick={processSelectedMessage}
+                      disabled={!selectedMessage || actionLoading !== null}
+                      className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-black disabled:opacity-50"
+                    >
+                      Process with AI
+                    </button>
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>

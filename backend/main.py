@@ -27,6 +27,12 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 from pypdf import PdfReader
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import io
+import jwt
+from jwt.exceptions import InvalidTokenError
+from pwdlib import PasswordHash
+from datetime import timedelta, timezone
+from fastapi import Depends, status
+from fastapi.security import OAuth2PasswordBearer
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -51,6 +57,13 @@ GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback"
 )
 GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
+
+SECRET_KEY = os.getenv("APP_SECRET_KEY", secrets.token_hex(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+
+password_hash = PasswordHash.recommended()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -187,6 +200,43 @@ class Document(SQLModel, table=True):
     extracted_text: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class UserRole(str, Enum):
+    admin = "admin"
+    reviewer = "reviewer"
+
+
+class User(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: EmailStr = Field(index=True)
+    full_name: str
+    hashed_password: str
+    role: UserRole = Field(default=UserRole.reviewer)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class LoginRequest(SQLModel):
+    email: EmailStr
+    password: str
+
+
+class BootstrapAdminRequest(SQLModel):
+    email: EmailStr
+    full_name: str
+    password: str
+
+
+class UserRead(SQLModel):
+    id: int
+    email: EmailStr
+    full_name: str
+    role: UserRole
+    is_active: bool
+
+
+class TokenResponse(SQLModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserRead
 
 class ExtractedFields(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -416,6 +466,65 @@ def archive_gmail_message(service, gmail_message_id: str) -> dict:
         )
         .execute()
     )
+    
+def get_user_by_email(session: Session, email: str) -> User | None:
+    return session.exec(
+        select(User).where(User.email == email.strip().lower())
+    ).first()
+
+
+def hash_password(password: str) -> str:
+    return password_hash.hash(password)
+
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    return password_hash.verify(password, hashed_password)
+
+
+def create_access_token(subject: str, role: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": subject,
+        "role": role,
+        "exp": expire,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if not email:
+            raise credentials_exception
+    except InvalidTokenError:
+        raise credentials_exception
+
+    with Session(engine, expire_on_commit=False) as session:
+        user = get_user_by_email(session, email)
+        if not user or not user.is_active:
+            raise credentials_exception
+        return user
+
+
+def require_roles(*allowed_roles: UserRole):
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        return current_user
+
+    return dependency
+
+
+def actor_name_for(user: User) -> str:
+    return user.full_name.strip() or user.email    
+
 def append_customer_reply_to_message(
     session: Session,
     *,
@@ -539,32 +648,155 @@ def should_auto_ignore_message(
     sender_l = (sender_email or "").lower()
     body_l = (body_text or "").lower()
 
-    if "no-reply" in sender_l or "noreply" in sender_l:
-        return True, "noreply_sender"
+    ignored_sender_fragments = [
+        "noreply",
+        "no-reply",
+        "newsletter",
+        "fashionnews",
+        "marketing",
+        "mailer",
+        "digest",
+        "updates@",
+        "notification@",
+        "notifications@",
+        "jobs-listings@",
+        "quora.com",
+        "linkedin.com",
+    ]
+    if any(part in sender_l for part in ignored_sender_fragments):
+        return True, "ignored_sender_pattern"
 
-    if any(x in sender_l for x in ["notifications@", "notification@", "updates@", "mailer@", "news@", "newsletter@"]):
-        return True, "system_sender"
-
-    if "unsubscribe" in body_l or "manage preferences" in body_l or "view in browser" in body_l:
+    newsletter_phrases = [
+        "unsubscribe",
+        "manage preferences",
+        "email preferences",
+        "view in browser",
+        "why did i get this email",
+        "update your preferences",
+        "privacy policy",
+        "terms of service",
+    ]
+    if sum(1 for phrase in newsletter_phrases if phrase in body_l) >= 2:
         return True, "newsletter_pattern"
 
-    if count_urls(body_text) >= 8:
-        return True, "too_many_links"
-
-    promo_keywords = [
+    promo_subject_keywords = [
         "sale",
         "discount",
         "special offer",
         "limited time",
         "shop now",
         "save big",
+        "new arrivals",
+        "wishlist",
+        "price drop",
+        "up to ",
+        "% off",
+        "deal",
         "promo",
-        "marketing",
+        "coupon",
+        "now hiring",
+        "job alert",
+        "digest",
     ]
-    if any(word in subject_l for word in promo_keywords):
+    if any(word in subject_l for word in promo_subject_keywords):
         return True, "promotional_subject"
 
+    if count_urls(body_text) >= 6:
+        return True, "too_many_links"
+
+    if len(body_l) < 40 and count_urls(body_text) >= 2:
+        return True, "short_link_heavy_message"
+
+    actionable_keywords = [
+        "quote",
+        "pricing",
+        "proposal",
+        "project",
+        "website",
+        "web design",
+        "invoice",
+        "contract",
+        "deadline",
+        "support",
+        "help",
+        "issue",
+        "problem",
+        "meeting",
+        "call",
+        "client",
+        "budget",
+        "timeline",
+    ]
+
+    if any(word in subject_l for word in actionable_keywords):
+        return False, None
+
+    if any(word in body_l for word in actionable_keywords):
+        return False, None
+
     return False, None
+
+
+def triage_score(
+    *,
+    subject: str,
+    sender_email: str,
+    body_text: str,
+) -> int:
+    score = 0
+
+    subject_l = (subject or "").lower()
+    sender_l = (sender_email or "").lower()
+    body_l = (body_text or "").lower()
+
+    positive_keywords = [
+        "quote",
+        "pricing",
+        "proposal",
+        "project",
+        "website",
+        "budget",
+        "timeline",
+        "support",
+        "issue",
+        "help",
+        "meeting",
+        "client",
+        "invoice",
+        "contract",
+    ]
+    negative_keywords = [
+        "unsubscribe",
+        "sale",
+        "discount",
+        "promo",
+        "wishlist",
+        "price drop",
+        "digest",
+        "now hiring",
+        "job alert",
+    ]
+
+    for word in positive_keywords:
+        if word in subject_l:
+            score += 3
+        if word in body_l:
+            score += 1
+
+    for word in negative_keywords:
+        if word in subject_l:
+            score -= 3
+        if word in body_l:
+            score -= 1
+
+    if "noreply" in sender_l or "no-reply" in sender_l:
+        score -= 3
+
+    if count_urls(body_text) >= 6:
+        score -= 2
+
+    return score
+
 
 def sanitize_filename(filename: str) -> str:
     keep = []
@@ -1250,6 +1482,66 @@ def list_message_notes(message_id: int) -> list[InternalNote]:
         return notes
 
 
+@app.post("/auth/bootstrap", response_model=UserRead)
+def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
+    with Session(engine, expire_on_commit=False) as session:
+        existing_user = session.exec(select(User)).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Bootstrap already completed")
+
+        user = User(
+            email=payload.email.strip().lower(),
+            full_name=payload.full_name.strip(),
+            hashed_password=hash_password(payload.password),
+            role=UserRole.admin,
+            is_active=True,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(payload: LoginRequest) -> TokenResponse:
+    with Session(engine, expire_on_commit=False) as session:
+        user = get_user_by_email(session, payload.email)
+        if not user or not verify_password(payload.password, user.hashed_password):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        token = create_access_token(user.email, user.role.value)
+
+        return TokenResponse(
+            access_token=token,
+            user=UserRead(
+                id=user.id,
+                email=user.email,
+                full_name=user.full_name,
+                role=user.role,
+                is_active=user.is_active,
+            ),
+        )
+
+
+@app.get("/auth/me", response_model=UserRead)
+def auth_me(current_user: User = Depends(get_current_user)) -> UserRead:
+    return UserRead(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+    )
+
+@app.get("/messages", response_model=list[MessageRead])
+def list_messages(current_user: User = Depends(get_current_user)) -> list[Message]:
+    with Session(engine, expire_on_commit=False) as session:
+        rows = session.exec(select(Message).order_by(Message.created_at.desc())).all()
+        return rows
+
+
+
+
 @app.post("/messages/{message_id}/notes", response_model=InternalNoteRead)
 def create_message_note(message_id: int, payload: InternalNoteCreate) -> InternalNote:
     with Session(engine, expire_on_commit=False) as session:
@@ -1282,6 +1574,29 @@ def create_message_note(message_id: int, payload: InternalNoteCreate) -> Interna
         )
 
         return note
+
+@app.post("/messages/{message_id}/approve")
+def approve_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        message.status = MessageStatus.approved
+        message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "approved",
+            actor_name_for(current_user),
+            metadata_json=None,
+        )
+
+        return {"ok": True, "message_id": message_id, "status": message.status}
 
 @app.post("/messages/{message_id}/unignore")
 def unignore_message(message_id: int) -> dict:
@@ -1660,7 +1975,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
         .list(
             userId="me",
             labelIds=["INBOX"],
-            q="in:inbox",
+            q='in:inbox -category:promotions -category:social -category:forums -from:noreply -from:no-reply -from:mailer-daemon',
             maxResults=max_results,
         )
         .execute()
@@ -1671,6 +1986,10 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
     imported_count = 0
     processed_count = 0
+    duplicate_count = 0
+    thread_reply_updated_count = 0
+    own_thread_skipped_count = 0
+    auto_ignored_count = 0
     skipped_count = 0
     duplicate_count = 0
     thread_reply_updated_count = 0
@@ -1689,6 +2008,8 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
             if gmail_message_id in existing_gmail_ids:
                 duplicate_count += 1
+                thread_reply_updated_count += 1
+                own_thread_skipped_count += 1
                 skipped_count += 1
                 continue
 
@@ -1809,6 +2130,11 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
                 sender_email=sender_email,
                 body_text=body_text,
             )
+            score = triage_score(
+                subject=subject,
+                sender_email=sender_email,
+                body_text=body_text,
+            )
 
             message = Message(
                 subject=subject,
@@ -1849,6 +2175,8 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
                         "gmail_message_id": gmail_message_id,
                         "thread_id": gmail_thread_id,
                         "attachment_count": attachment_count,
+                        "triage_score": score,
+                        "auto_ignored": should_ignore,
                     }
                 ),
             )
@@ -1864,6 +2192,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
             imported_attachment_count += attachment_count
             imported_count += 1
+            auto_ignored_count += 1
             imported_ids.append(message.id)
             existing_gmail_ids.add(gmail_message_id)
 
@@ -1889,6 +2218,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
     "duplicate_count": duplicate_count,
     "skipped_count": skipped_count,
     "imported_message_ids": imported_ids,
+    "auto_ignored_count": auto_ignored_count,
 }
 
 
