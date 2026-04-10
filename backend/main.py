@@ -145,7 +145,36 @@ class MessageSource(str, Enum):
     manual = ("manual",)
     gmail = ("gmail",)
 
+class ReplyTone(str, Enum):
+    professional = "professional"
+    friendly = "friendly"
+    concise = "concise"
+    warm = "warm"
 
+
+DEFAULT_QUOTE_REQUIRED_FIELDS = [
+    "company_name",
+    "website_url",
+    "budget",
+    "timeline",
+    "location",
+    "pages_needed",
+    "business_goals",
+]
+
+
+class CompanySettings(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    company_name: str = Field(default="Your Company")
+    preferred_reply_tone: ReplyTone = Field(default=ReplyTone.professional)
+    reply_signature: str = Field(default="Best,\nYour Company")
+    ignore_senders_json: str = Field(default="[]")
+    quote_required_fields_json: str = Field(
+        default=json.dumps(DEFAULT_QUOTE_REQUIRED_FIELDS)
+    )
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
 class MessageStatus(str, Enum):
     new = "new"
     processing = "processing"
@@ -204,6 +233,20 @@ class UserRole(str, Enum):
     admin = "admin"
     reviewer = "reviewer"
 
+class CompanySettingsRead(SQLModel):
+    company_name: str
+    preferred_reply_tone: ReplyTone
+    reply_signature: str
+    ignore_senders: list[str]
+    quote_required_fields: list[str]
+
+
+class CompanySettingsUpdate(SQLModel):
+    company_name: str
+    preferred_reply_tone: ReplyTone
+    reply_signature: str
+    ignore_senders: list[str]
+    quote_required_fields: list[str]
 
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -480,6 +523,117 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed_password: str) -> bool:
     return password_hash.verify(password, hashed_password)
 
+def parse_json_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def list_to_json(values: list[str]) -> str:
+    cleaned = [str(v).strip() for v in values if str(v).strip()]
+    return json.dumps(cleaned)
+
+
+def get_or_create_company_settings(session: Session) -> CompanySettings:
+    settings = session.exec(select(CompanySettings)).first()
+    if settings:
+        return settings
+
+    settings = CompanySettings()
+    session.add(settings)
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+def build_tone_instruction(tone: ReplyTone) -> str:
+    if tone == ReplyTone.friendly:
+        return "Write in a friendly, approachable tone."
+    if tone == ReplyTone.concise:
+        return "Write in a concise, direct tone."
+    if tone == ReplyTone.warm:
+        return "Write in a warm, helpful, personable tone."
+    return "Write in a professional, helpful tone."
+
+
+def build_company_style_context(settings: CompanySettingsRead) -> str:
+    return (
+        f"Company name: {settings.company_name}\n"
+        f"Preferred reply tone: {settings.preferred_reply_tone.value}\n"
+        f"Reply signature:\n{settings.reply_signature}\n"
+        f"{build_tone_instruction(settings.preferred_reply_tone)}"
+    )
+
+def company_settings_to_read(settings: CompanySettings) -> CompanySettingsRead:
+    return CompanySettingsRead(
+        company_name=settings.company_name,
+        preferred_reply_tone=settings.preferred_reply_tone,
+        reply_signature=settings.reply_signature,
+        ignore_senders=parse_json_list(settings.ignore_senders_json),
+        quote_required_fields=parse_json_list(settings.quote_required_fields_json),
+    )
+
+QUOTE_FIELD_LABELS = {
+    "requested_service": "Requested service",
+    "project_type": "Project type",
+    "company_name": "Company name",
+    "website_url": "Website URL",
+    "budget": "Budget",
+    "timeline": "Timeline",
+    "location": "Location",
+    "pages_needed": "Pages needed",
+    "business_goals": "Business goals",
+}
+
+
+def is_quote_category(category: object) -> bool:
+    value = str(getattr(category, "value", category)).lower()
+    return value in {"quote_request", "quote"}
+
+
+def is_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, list):
+        return len([v for v in value if str(v).strip()]) == 0
+    return False
+
+
+def get_missing_required_fields(
+    extracted_data: dict,
+    required_fields: list[str],
+) -> list[str]:
+    missing: list[str] = []
+
+    for field in required_fields:
+        value = extracted_data.get(field)
+        if is_missing_value(value):
+            missing.append(QUOTE_FIELD_LABELS.get(field, field.replace("_", " ").title()))
+
+    return missing
+
+
+def merge_missing_information(
+    extracted_data: dict,
+    required_fields: list[str],
+) -> list[str]:
+    ai_missing = extracted_data.get("missing_information") or []
+    required_missing = get_missing_required_fields(extracted_data, required_fields)
+
+    merged: list[str] = []
+    for item in [*ai_missing, *required_missing]:
+        label = str(item).strip()
+        if label and label not in merged:
+            merged.append(label)
+
+    return merged
 
 def create_access_token(subject: str, role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -643,9 +797,14 @@ def should_auto_ignore_message(
     subject: str,
     sender_email: str,
     body_text: str,
+    custom_ignore_senders: list[str] | None = None,
 ) -> tuple[bool, str | None]:
     subject_l = (subject or "").lower()
     sender_l = (sender_email or "").lower()
+    custom_ignore_senders = custom_ignore_senders or []
+
+    if any(pattern.lower().strip() in sender_l for pattern in custom_ignore_senders if pattern.strip()):
+        return True, "custom_ignore_sender"
     body_l = (body_text or "").lower()
 
     ignored_sender_fragments = [
@@ -1385,7 +1544,10 @@ def run_ai_workflow_for_message(session: Session, message_id: int) -> dict:
     classification = ai_classify_message(message.subject, context)
     message.category = classification.category
     message.ai_confidence = classification.confidence
-
+    settings = get_or_create_company_settings(session)
+    settings_read = company_settings_to_read(settings)
+    style_context = build_company_style_context(settings_read)
+    context = context + "\n\nCOMPANY SETTINGS:\n" + style_context
     extracted = ai_extract_fields(classification.category, context)
     reply = ai_draft_reply(
         classification.category,
@@ -1521,6 +1683,32 @@ def login(payload: LoginRequest) -> TokenResponse:
                 is_active=user.is_active,
             ),
         )
+
+
+@app.get("/settings", response_model=CompanySettingsRead)
+def get_settings() -> CompanySettingsRead:
+    with Session(engine, expire_on_commit=False) as session:
+        settings = get_or_create_company_settings(session)
+        return company_settings_to_read(settings)
+
+
+@app.put("/settings", response_model=CompanySettingsRead)
+def update_settings(payload: CompanySettingsUpdate) -> CompanySettingsRead:
+    with Session(engine, expire_on_commit=False) as session:
+        settings = get_or_create_company_settings(session)
+
+        settings.company_name = payload.company_name.strip() or "Your Company"
+        settings.preferred_reply_tone = payload.preferred_reply_tone
+        settings.reply_signature = payload.reply_signature.strip() or "Best,\nYour Company"
+        settings.ignore_senders_json = list_to_json(payload.ignore_senders)
+        settings.quote_required_fields_json = list_to_json(payload.quote_required_fields)
+        settings.updated_at = datetime.utcnow()
+
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+
+        return company_settings_to_read(settings)
 
 
 @app.get("/auth/me", response_model=UserRead)
@@ -2022,12 +2210,12 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
             payload = gmail_message.get("payload", {}) or {}
             headers = payload.get("headers", []) or []
-
+            settings = get_or_create_company_settings(session)
+            settings_read = company_settings_to_read(settings)
             subject = extract_header(headers, "Subject") or "(No subject)"
             from_header = extract_header(headers, "From") or ""
             sender_name, sender_email = parseaddr(from_header)
             sender_email_normalized = (sender_email or "").lower().strip()
-
             gmail_thread_id = gmail_message.get("threadId")
             is_from_me = sender_email_normalized == connected_gmail_address
 
@@ -2129,6 +2317,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
                 subject=subject,
                 sender_email=sender_email,
                 body_text=body_text,
+                custom_ignore_senders=settings_read.ignore_senders,
             )
             score = triage_score(
                 subject=subject,
@@ -2362,9 +2551,20 @@ def generate_missing_info_draft(message_id: int) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
-
         context = build_message_context(session, message)
+        settings = get_or_create_company_settings(session)
+        settings_read = company_settings_to_read(settings)
+        style_context = build_company_style_context(settings_read)
+        context = context + "\n\nCOMPANY SETTINGS:\n" + style_context
         extracted = ai_extract_fields(message.category, context)
+    if is_quote_category(message.category):
+        extracted_data = extracted.model_dump()
+        merged_missing = merge_missing_information(
+        extracted_data,
+        settings_read.quote_required_fields,
+    )
+    if hasattr(extracted, "missing_information"):
+        extracted.missing_information = merged_missing
         draft_output = ai_draft_missing_info(
             message.category,
             message.sender_name,

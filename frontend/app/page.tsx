@@ -142,6 +142,16 @@ type LatestExtractionResponse = {
   created_at?: string;
 };
 
+type ReplyTone = "professional" | "friendly" | "concise" | "warm";
+
+type CompanySettings = {
+  company_name: string;
+  preferred_reply_tone: ReplyTone;
+  reply_signature: string;
+  ignore_senders: string[];
+  quote_required_fields: string[];
+};
+
 type AuditLogItem = {
   id: number;
   action: string;
@@ -244,6 +254,7 @@ export default function Page() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [notes, setNotes] = useState<InternalNote[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [authReady, setAuthReady] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -298,7 +309,25 @@ export default function Page() {
     { key: "archived", label: "Archived" },
     { key: "all", label: "All" },
   ];
+  const [settings, setSettings] = useState<CompanySettings>({
+    company_name: "Your Company",
+    preferred_reply_tone: "professional",
+    reply_signature: "Best,\nYour Company",
+    ignore_senders: [],
+    quote_required_fields: [
+      "company_name",
+      "website_url",
+      "budget",
+      "timeline",
+      "location",
+      "pages_needed",
+      "business_goals",
+    ],
+  });
 
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [ignoreSendersText, setIgnoreSendersText] = useState("");
   const queueCounts: Record<QueueFilter, number> = useMemo(() => {
     return {
       needs_review: messages.filter((m) => m.status === "needs_review").length,
@@ -318,6 +347,7 @@ export default function Page() {
     body_text: "",
   });
   const [creating, setCreating] = useState(false);
+
   async function fetchMessages() {
     setLoading(true);
     try {
@@ -341,7 +371,24 @@ export default function Page() {
       setLoading(false);
     }
   }
+  async function fetchSettings() {
+    try {
+      const response = await authFetch(`${API_BASE}/settings`);
+      const data = await response.json();
 
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load settings");
+      }
+
+      setSettings(data);
+      setIgnoreSendersText((data.ignore_senders || []).join("\n"));
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Failed to load settings",
+      });
+    }
+  }
 
   async function fetchMessageNotes(messageId: number) {
     try {
@@ -921,7 +968,54 @@ export default function Page() {
       setLoggingIn(false);
     }
   }
+function toggleRequiredField(field: string) {
+  setSettings((prev) => {
+    const exists = prev.quote_required_fields.includes(field);
+    return {
+      ...prev,
+      quote_required_fields: exists
+        ? prev.quote_required_fields.filter((f) => f !== field)
+        : [...prev.quote_required_fields, field],
+    };
+  });
+}
+async function saveSettings() {
+  setSettingsSaving(true);
 
+  try {
+    const response = await authFetch(`${API_BASE}/settings`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...settings,
+        ignore_senders: ignoreSendersText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Failed to save settings");
+
+    setSettings(data);
+    setIgnoreSendersText((data.ignore_senders || []).join("\n"));
+
+    setToast({
+      type: "success",
+      message: "Settings saved.",
+    });
+  } catch (error) {
+    setToast({
+      type: "error",
+      message: error instanceof Error ? error.message : "Failed to save settings",
+    });
+  } finally {
+    setSettingsSaving(false);
+  }
+}
   async function login() {
     setLoggingIn(true);
     try {
@@ -984,8 +1078,11 @@ export default function Page() {
     }
   }
   useEffect(() => {
-    fetchMessages();
-  }, []);
+    if (token && authUser) {
+      fetchMessages();
+      fetchSettings();
+    }
+  }, [token, authUser]);
 
   useEffect(() => {
     if (selectedId !== null) {
@@ -1005,7 +1102,10 @@ export default function Page() {
 
     if (savedToken) setToken(savedToken);
     if (savedUser) setAuthUser(JSON.parse(savedUser));
+
+    setAuthReady(true);
   }, []);
+
 
   async function authFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     const headers = new Headers(init.headers || {});
@@ -1129,73 +1229,91 @@ export default function Page() {
       actionLabel: "Approve draft",
     };
   }, [selectedMessage, processedData, missingInfoItems.length]);
-  [selectedMessage, processedData, missingInfoItems.length]
 
-  const recommendationStyles: Record<string, string> = {
-    slate: "border-slate-200 bg-slate-50 text-slate-800",
-    blue: "border-blue-200 bg-blue-50 text-blue-900",
-    amber: "border-amber-200 bg-amber-50 text-amber-900",
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
-    violet: "border-violet-200 bg-violet-50 text-violet-900",
-    sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
-  };
-  if (!token || !authUser) {
-    return (
-      <div className="min-h-screen bg-slate-100 p-6">
-        <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h1 className="text-2xl font-semibold">Sign in</h1>
-          <p className="mt-2 text-sm text-slate-600">
-            Log in to access the email workflow dashboard.
-          </p>
+ const recommendationStyles: Record<string, string> = {
+  slate: "border-slate-200 bg-slate-50 text-slate-800",
+  blue: "border-blue-200 bg-blue-50 text-blue-900",
+  amber: "border-amber-200 bg-amber-50 text-amber-900",
+  emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
+  violet: "border-violet-200 bg-violet-50 text-violet-900",
+  sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
+};
 
-          <div className="mt-6 space-y-4">
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
-              <input
-                value={loginForm.email}
-                onChange={(e) =>
-                  setLoginForm((prev) => ({ ...prev, email: e.target.value }))
-                }
-                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-                placeholder="you@example.com"
-              />
-            </div>
+useEffect(() => {
+  if (token && authUser) {
+    fetchMessages();
+    fetchSettings();
+  }
+}, [token, authUser]);
 
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">Password</label>
-              <input
-                type="password"
-                value={loginForm.password}
-                onChange={(e) =>
-                  setLoginForm((prev) => ({ ...prev, password: e.target.value }))
-                }
-                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-                placeholder="••••••••"
-              />
-            </div>
+if (!authReady) {
+  return (
+    <div className="min-h-screen bg-slate-100 p-6">
+      <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-sm text-slate-600">Loading...</p>
+      </div>
+    </div>
+  );
+}
 
-            <div className="flex gap-3">
-              <button
-                onClick={login}
-                disabled={loggingIn}
-                className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-              >
-                {loggingIn ? "Signing in..." : "Sign in"}
-              </button>
+if (!token || !authUser) {
+  return (
+    <div className="min-h-screen bg-slate-100 p-6">
+      <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h1 className="text-2xl font-semibold">Sign in</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Log in to access the email workflow dashboard.
+        </p>
 
-              <button
-                onClick={bootstrapAdmin}
-                disabled={loggingIn}
-                className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
-              >
-                Create first admin
-              </button>
-            </div>
+        <div className="mt-6 space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
+            <input
+              value={loginForm.email}
+              onChange={(e) =>
+                setLoginForm((prev) => ({ ...prev, email: e.target.value }))
+              }
+              className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              placeholder="you@example.com"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Password</label>
+            <input
+              type="password"
+              value={loginForm.password}
+              onChange={(e) =>
+                setLoginForm((prev) => ({ ...prev, password: e.target.value }))
+              }
+              className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={login}
+              disabled={loggingIn}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {loggingIn ? "Signing in..." : "Sign in"}
+            </button>
+
+            <button
+              onClick={bootstrapAdmin}
+              disabled={loggingIn}
+              className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+            >
+              Create first admin
+            </button>
           </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white p-6 text-slate-900">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -1295,7 +1413,115 @@ export default function Page() {
             </div>
           </div>
         </div>
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Company settings</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Configure business rules, reply tone, signature, and filtering behavior.
+              </p>
+            </div>
 
+            <button
+              onClick={saveSettings}
+              disabled={settingsSaving || settingsLoading}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
+            >
+              {settingsSaving ? "Saving..." : "Save settings"}
+            </button>
+          </div>
+
+          <div className="mt-6 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Company name</label>
+              <input
+                value={settings.company_name}
+                onChange={(e) =>
+                  setSettings((prev) => ({ ...prev, company_name: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder="Acme Studio"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Preferred reply tone</label>
+              <select
+                value={settings.preferred_reply_tone}
+                onChange={(e) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    preferred_reply_tone: e.target.value as ReplyTone,
+                  }))
+                }
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+              >
+                <option value="professional">Professional</option>
+                <option value="friendly">Friendly</option>
+                <option value="concise">Concise</option>
+                <option value="warm">Warm</option>
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-sm font-medium text-slate-700">Reply signature</label>
+              <textarea
+                value={settings.reply_signature}
+                onChange={(e) =>
+                  setSettings((prev) => ({ ...prev, reply_signature: e.target.value }))
+                }
+                className="min-h-[120px] w-full rounded-2xl border border-slate-300 bg-white p-3 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder={"Best,\nAcme Studio"}
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">
+                Custom ignore senders
+              </label>
+              <textarea
+                value={ignoreSendersText}
+                onChange={(e) => setIgnoreSendersText(e.target.value)}
+                className="min-h-[160px] w-full rounded-2xl border border-slate-300 bg-white p-3 text-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-100"
+                placeholder={"newsletter@\nlinkedin.com\nquora.com"}
+              />
+              <p className="mt-2 text-xs text-slate-500">
+                One sender pattern per line. Matching senders will be auto-ignored.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Required quote fields
+              </label>
+              <div className="grid gap-2">
+                {[
+                  ["company_name", "Company name"],
+                  ["website_url", "Website URL"],
+                  ["budget", "Budget"],
+                  ["timeline", "Timeline"],
+                  ["location", "Location"],
+                  ["pages_needed", "Pages needed"],
+                  ["business_goals", "Business goals"],
+                  ["requested_service", "Requested service"],
+                  ["project_type", "Project type"],
+                ].map(([value, label]) => (
+                  <label
+                    key={value}
+                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={settings.quote_required_fields.includes(value)}
+                      onChange={() => toggleRequiredField(value)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4">
             <h2 className="text-xl font-semibold">Create message</h2>
