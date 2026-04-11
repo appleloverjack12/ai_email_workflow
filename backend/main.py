@@ -666,17 +666,14 @@ def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
 
     story = []
 
-    story.append(Paragraph("Electrical Quote Brief", title_style))
-    story.append(Spacer(1, 6))
-
+    story.append(Paragraph("Elesys – Brief za upit", title_style))
+    story.append(Spacer(1, 4))
     story.append(
-        Paragraph(
-            f"<b>Service:</b> {safe_text(brief.service_label)} &nbsp;&nbsp;&nbsp; "
-            f"<b>Lead score:</b> {safe_text(brief.lead_score)}/100 &nbsp;&nbsp;&nbsp; "
-            f"<b>Status:</b> {safe_text(brief.current_workflow_status)}",
-            normal_style,
-        )
+    Paragraph(
+        "Automatski pripremljen pregled upita za elektroinstalacije / terenski izvid / izradu ponude.",
+        normal_style,
     )
+)
     story.append(Spacer(1, 10))
 
     summary_table_data = [
@@ -714,7 +711,12 @@ def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
     story.append(Paragraph("Estimator Summary", heading_style))
     story.append(Paragraph(safe_text(brief.estimator_summary), normal_style))
     story.append(Spacer(1, 10))
-
+    story.append(Paragraph("Sažetak upita", heading_style))
+    story.append(Paragraph("Preporučeni sljedeći korak", heading_style))
+    story.append(Paragraph("Nedostajuće tehničke informacije", heading_style))
+    story.append(Paragraph("Privitci i dokumenti", heading_style))
+    story.append(Paragraph("Sažetak privitaka", heading_style))
+    story.append(Paragraph("Interne bilješke", heading_style))
     story.append(Paragraph("Recommended Next Step", heading_style))
     story.append(Paragraph(safe_text(brief.recommended_next_step), normal_style))
     story.append(Spacer(1, 10))
@@ -2153,7 +2155,7 @@ def export_quote_brief_pdf(message_id: int):
         message = get_message_or_404(session, message_id)
         pdf_bytes = build_quote_brief_pdf_bytes(session, message)
 
-    filename = f"quote-brief-message-{message_id}.pdf"
+    filename = f"elesys-brief-message-{message_id}.pdf"
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
