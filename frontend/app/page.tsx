@@ -20,7 +20,10 @@ type MessageStatus =
   | "error"
   | "archived"
   | "ignored"
-  | "waiting_for_info";
+  | "waiting_for_info"
+  | "ready_for_quote"
+  | "ready_for_site_visit";
+
 
 type UploadedDocument = {
   id: number;
@@ -58,6 +61,56 @@ type Message = {
   has_attachments: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type ElectricalServiceType =
+  | "strong_current"
+  | "weak_current"
+  | "solar"
+  | "maintenance"
+  | "project_design"
+  | "unknown";
+
+type ElectricalQuoteBrief = {
+  service_type: ElectricalServiceType;
+  service_label: string;
+  lead_priority: LeadPriority;
+  lead_score: number;
+  current_workflow_status: string;
+  client_name?: string | null;
+  client_email?: string | null;
+  client_phone?: string | null;
+  location?: string | null;
+  object_type?: string | null;
+  budget?: string | null;
+  timeline?: string | null;
+  urgency?: string | null;
+  installation_type?: string | null;
+  attachments_summary?: string | null;
+  missing_fields: string[];
+  recommended_next_step: string;
+  estimator_summary: string;
+};
+
+
+type LeadPriority = "hot" | "needs_info" | "low_detail";
+
+type ElectricalQualification = {
+  service_type: ElectricalServiceType;
+  service_label: string;
+  object_type?: string | null;
+  location?: string | null;
+  budget?: string | null;
+  timeline?: string | null;
+  urgency?: string | null;
+  power_capacity?: string | null;
+  installation_type?: string | null;
+  attachments_summary?: string | null;
+  lead_priority: LeadPriority;
+  lead_score: number;
+  missing_fields: string[];
+  recommended_next_step: string;
+  client_summary: string;
 };
 
 type InternalNote = {
@@ -194,6 +247,8 @@ const statusStyles: Record<MessageStatus, string> = {
   error: "bg-red-100 text-red-700",
   archived: "bg-slate-200 text-slate-700",
   ignored: "bg-orange-100 text-orange-700",
+  ready_for_quote: "bg-violet-100 text-violet-700",
+  ready_for_site_visit: "bg-cyan-100 text-cyan-700",
 };
 
 const categoryStyles: Record<MessageCategory, string> = {
@@ -252,8 +307,12 @@ export default function Page() {
   const [uploading, setUploading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [electricalQualification, setElectricalQualification] = useState<ElectricalQualification | null>(null);
+  const [qualificationLoading, setQualificationLoading] = useState(false);
   const [notes, setNotes] = useState<InternalNote[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [quoteBrief, setQuoteBrief] = useState<ElectricalQuoteBrief | null>(null);
+  const [quoteBriefLoading, setQuoteBriefLoading] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [token, setToken] = useState<string | null>(null);
@@ -371,6 +430,44 @@ export default function Page() {
       setLoading(false);
     }
   }
+
+  async function downloadQuoteBriefPdf() {
+    if (!selectedMessage) return;
+
+    try {
+      const response = await authFetch(
+        `${API_BASE}/messages/${selectedMessage.id}/quote-brief.pdf`
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to export PDF");
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `quote-brief-${selectedMessage.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      window.URL.revokeObjectURL(url);
+
+      setToast({
+        type: "success",
+        message: "Quote brief PDF exported.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Failed to export PDF",
+      });
+    }
+  }
+
   async function fetchSettings() {
     try {
       const response = await authFetch(`${API_BASE}/settings`);
@@ -387,6 +484,60 @@ export default function Page() {
         type: "error",
         message: error instanceof Error ? error.message : "Failed to load settings",
       });
+    }
+  }
+
+  async function fetchQuoteBrief(messageId: number) {
+    setQuoteBriefLoading(true);
+
+    try {
+      const response = await authFetch(`${API_BASE}/messages/${messageId}/quote-brief`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load quote brief");
+      }
+
+      if (selectedId === messageId) {
+        setQuoteBrief(data);
+      }
+    } catch (error) {
+      if (selectedId === messageId) {
+        setQuoteBrief(null);
+      }
+
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Quote brief failed",
+      });
+    } finally {
+      if (selectedId === messageId) {
+        setQuoteBriefLoading(false);
+      }
+    }
+  }
+  async function fetchElectricalQualification(messageId: number) {
+    setQualificationLoading(true);
+
+    try {
+      const response = await authFetch(`${API_BASE}/messages/${messageId}/electrical-qualification`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load electrical qualification");
+      }
+
+      if (selectedId === messageId) {
+        setElectricalQualification(data);
+      }
+    } catch (error) {
+      if (selectedId === messageId) {
+        setElectricalQualification(null);
+      }
+    } finally {
+      if (selectedId === messageId) {
+        setQualificationLoading(false);
+      }
     }
   }
 
@@ -516,6 +667,7 @@ export default function Page() {
       setEditedDraft("");
       setDocuments([]);
       setAuditLogs([]);
+      setElectricalQualification(null);
 
       setToast({
         type: "success",
@@ -756,6 +908,12 @@ export default function Page() {
     }
   }
   async function fetchMessageDetail(messageId: number) {
+    console.log("fetchMessageDetail messageId", messageId);
+
+    if (!messages.some((m) => m.id === messageId)) {
+      return;
+    }
+
     setDetailLoading(true);
 
     try {
@@ -763,6 +921,8 @@ export default function Page() {
       if (!messageRes.ok) throw new Error("Failed to load message details");
 
       const messageData: Message = await messageRes.json();
+
+      if (selectedId !== messageId) return;
       setSelectedMessage(messageData);
 
       let extractedFields: Record<string, unknown> | undefined = undefined;
@@ -781,6 +941,7 @@ export default function Page() {
           }
         }
       } catch {
+        // ignore extraction load failure
       }
 
       try {
@@ -792,8 +953,10 @@ export default function Page() {
           }
         }
       } catch {
-        // ignore draft load failure for now
+        // ignore draft load failure
       }
+
+      if (selectedId !== messageId) return;
 
       if (extractedFields || draftText || classificationSummary) {
         setProcessedData({
@@ -810,18 +973,21 @@ export default function Page() {
       }
 
       setEditedDraft(draftText ?? "");
+
       await fetchDocuments(messageId);
       await fetchAuditLogs(messageId);
       await fetchMessageNotes(messageId);
+      await fetchElectricalQualification(messageId);
+      await fetchQuoteBrief(messageId);
     } catch (error) {
       setToast({
         type: "error",
         message: error instanceof Error ? error.message : "Unknown error",
       });
     } finally {
-      setDetailLoading(false);
-      setNewNote("");
-      setNotes([]);
+      if (selectedId === messageId) {
+        setDetailLoading(false);
+      }
     }
   }
   async function fetchDocuments(messageId: number) {
@@ -968,54 +1134,115 @@ export default function Page() {
       setLoggingIn(false);
     }
   }
-function toggleRequiredField(field: string) {
-  setSettings((prev) => {
-    const exists = prev.quote_required_fields.includes(field);
-    return {
-      ...prev,
-      quote_required_fields: exists
-        ? prev.quote_required_fields.filter((f) => f !== field)
-        : [...prev.quote_required_fields, field],
-    };
-  });
-}
-async function saveSettings() {
-  setSettingsSaving(true);
-
-  try {
-    const response = await authFetch(`${API_BASE}/settings`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...settings,
-        ignore_senders: ignoreSendersText
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean),
-      }),
+  function toggleRequiredField(field: string) {
+    setSettings((prev) => {
+      const exists = prev.quote_required_fields.includes(field);
+      return {
+        ...prev,
+        quote_required_fields: exists
+          ? prev.quote_required_fields.filter((f) => f !== field)
+          : [...prev.quote_required_fields, field],
+      };
     });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Failed to save settings");
-
-    setSettings(data);
-    setIgnoreSendersText((data.ignore_senders || []).join("\n"));
-
-    setToast({
-      type: "success",
-      message: "Settings saved.",
-    });
-  } catch (error) {
-    setToast({
-      type: "error",
-      message: error instanceof Error ? error.message : "Failed to save settings",
-    });
-  } finally {
-    setSettingsSaving(false);
   }
-}
+
+  async function markReadyForSiteVisit() {
+    if (!selectedMessage) return;
+    setActionLoading("ready-site-visit");
+
+    try {
+      const response = await authFetch(
+        `${API_BASE}/messages/${selectedMessage.id}/ready-for-site-visit`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+
+      if (!response.ok) throw new Error(data.detail || "Failed to update status");
+
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Marked as ready for site visit.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function markReadyForQuote() {
+    if (!selectedMessage) return;
+    setActionLoading("ready-quote");
+
+    try {
+      const response = await authFetch(
+        `${API_BASE}/messages/${selectedMessage.id}/ready-for-quote`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+
+      if (!response.ok) throw new Error(data.detail || "Failed to update status");
+
+      await fetchMessages();
+      await fetchMessageDetail(selectedMessage.id);
+
+      setToast({
+        type: "success",
+        message: "Marked as ready for quote.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function saveSettings() {
+    setSettingsSaving(true);
+
+    try {
+      const response = await authFetch(`${API_BASE}/settings`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...settings,
+          ignore_senders: ignoreSendersText
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean),
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to save settings");
+
+      setSettings(data);
+      setIgnoreSendersText((data.ignore_senders || []).join("\n"));
+
+      setToast({
+        type: "success",
+        message: "Settings saved.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        message: error instanceof Error ? error.message : "Failed to save settings",
+      });
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
   async function login() {
     setLoggingIn(true);
     try {
@@ -1085,10 +1312,25 @@ async function saveSettings() {
   }, [token, authUser]);
 
   useEffect(() => {
-    if (selectedId !== null) {
+    if (selectedId !== null && messages.some((m) => m.id === selectedId)) {
       fetchMessageDetail(selectedId);
     }
-  }, [selectedId]);
+  }, [selectedId, messages]);
+
+  useEffect(() => {
+    if (selectedId !== null && !messages.some((m) => m.id === selectedId)) {
+      setSelectedId(null);
+      setSelectedMessage(null);
+      setProcessedData(null);
+      setEditedDraft("");
+      setDocuments([]);
+      setAuditLogs([]);
+      setNotes([]);
+      setNewNote("");
+      setElectricalQualification(null);
+      setQuoteBrief(null);
+    }
+  }, [messages, selectedId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1128,6 +1370,21 @@ async function saveSettings() {
     return response;
   }
 
+  const priorityStyles: Record<LeadPriority, string> = {
+    hot: "bg-emerald-100 text-emerald-700",
+    needs_info: "bg-amber-100 text-amber-700",
+    low_detail: "bg-slate-100 text-slate-700",
+  };
+
+  const serviceStyles: Record<ElectricalServiceType, string> = {
+    strong_current: "bg-blue-100 text-blue-700",
+    weak_current: "bg-cyan-100 text-cyan-700",
+    solar: "bg-yellow-100 text-yellow-700",
+    maintenance: "bg-orange-100 text-orange-700",
+    project_design: "bg-violet-100 text-violet-700",
+    unknown: "bg-slate-100 text-slate-700",
+  };
+
   const quoteSummary = {
     requested_service: quoteFields["requested_service"],
     project_type: quoteFields["project_type"],
@@ -1156,6 +1413,25 @@ async function saveSettings() {
         title: "No message selected",
         description: "Select a message from the inbox to see the next recommended step.",
         action: null as null | "process" | "missing-info" | "approve" | "send",
+        actionLabel: "",
+      };
+    }
+    if (selectedMessage.status === "ready_for_site_visit") {
+      return {
+        tone: "sky",
+        title: "Ready for site visit",
+        description: "This lead has been qualified enough for a site inspection or on-site review.",
+        action: "none" as const,
+        actionLabel: "",
+      };
+    }
+
+    if (selectedMessage.status === "ready_for_quote") {
+      return {
+        tone: "violet",
+        title: "Ready for quote",
+        description: "This lead looks ready for quote preparation and final pricing review.",
+        action: "none" as const,
         actionLabel: "",
       };
     }
@@ -1230,89 +1506,87 @@ async function saveSettings() {
     };
   }, [selectedMessage, processedData, missingInfoItems.length]);
 
- const recommendationStyles: Record<string, string> = {
-  slate: "border-slate-200 bg-slate-50 text-slate-800",
-  blue: "border-blue-200 bg-blue-50 text-blue-900",
-  amber: "border-amber-200 bg-amber-50 text-amber-900",
-  emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
-  violet: "border-violet-200 bg-violet-50 text-violet-900",
-  sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
-};
+  const recommendationStyles: Record<string, string> = {
+    slate: "border-slate-200 bg-slate-50 text-slate-800",
+    blue: "border-blue-200 bg-blue-50 text-blue-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
+    violet: "border-violet-200 bg-violet-50 text-violet-900",
+    sky: "border-cyan-200 bg-cyan-50 text-cyan-900",
+  };
+  const priorityBadgeStyles: Record<LeadPriority, string> = {
+    hot: "bg-emerald-100 text-emerald-700",
+    needs_info: "bg-amber-100 text-amber-700",
+    low_detail: "bg-slate-100 text-slate-700",
+  };
 
-useEffect(() => {
-  if (token && authUser) {
-    fetchMessages();
-    fetchSettings();
-  }
-}, [token, authUser]);
-
-if (!authReady) {
-  return (
-    <div className="min-h-screen bg-slate-100 p-6">
-      <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <p className="text-sm text-slate-600">Loading...</p>
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-slate-100 p-6">
+        <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-sm text-slate-600">Loading...</p>
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-if (!token || !authUser) {
-  return (
-    <div className="min-h-screen bg-slate-100 p-6">
-      <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold">Sign in</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          Log in to access the email workflow dashboard.
-        </p>
+  if (!token || !authUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 p-6">
+        <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h1 className="text-2xl font-semibold">Sign in</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Log in to access the email workflow dashboard.
+          </p>
 
-        <div className="mt-6 space-y-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
-            <input
-              value={loginForm.email}
-              onChange={(e) =>
-                setLoginForm((prev) => ({ ...prev, email: e.target.value }))
-              }
-              className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-              placeholder="you@example.com"
-            />
-          </div>
+          <div className="mt-6 space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
+              <input
+                value={loginForm.email}
+                onChange={(e) =>
+                  setLoginForm((prev) => ({ ...prev, email: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                placeholder="you@example.com"
+              />
+            </div>
 
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Password</label>
-            <input
-              type="password"
-              value={loginForm.password}
-              onChange={(e) =>
-                setLoginForm((prev) => ({ ...prev, password: e.target.value }))
-              }
-              className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
-              placeholder="••••••••"
-            />
-          </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) =>
+                  setLoginForm((prev) => ({ ...prev, password: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                placeholder="••••••••"
+              />
+            </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={login}
-              disabled={loggingIn}
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-            >
-              {loggingIn ? "Signing in..." : "Sign in"}
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={login}
+                disabled={loggingIn}
+                className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                {loggingIn ? "Signing in..." : "Sign in"}
+              </button>
 
-            <button
-              onClick={bootstrapAdmin}
-              disabled={loggingIn}
-              className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
-            >
-              Create first admin
-            </button>
+              <button
+                onClick={bootstrapAdmin}
+                disabled={loggingIn}
+                className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+              >
+                Create first admin
+              </button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white p-6 text-slate-900">
@@ -1938,7 +2212,280 @@ if (!token || !authUser) {
                 )}
               </div>
             </div>
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold">Electrical Quote Brief</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Estimator handoff view for site visit and quote preparation.
+                  </p>
+                </div>
 
+                {quoteBrief && (
+                  <div className="flex flex-wrap gap-2">
+                    <span className={`rounded-xl px-2.5 py-1 text-xs font-medium ${priorityBadgeStyles[quoteBrief.lead_priority]}`}>
+                      {quoteBrief.lead_priority === "hot"
+                        ? "Hot lead"
+                        : quoteBrief.lead_priority === "needs_info"
+                          ? "Needs info"
+                          : "Low detail"}
+                    </span>
+                    <button
+                      onClick={downloadQuoteBriefPdf}
+                      disabled={!selectedMessage || quoteBriefLoading || actionLoading !== null}
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Export PDF
+                    </button>
+
+                    <span className={`rounded-xl px-2.5 py-1 text-xs font-medium ${statusStyles[quoteBrief.current_workflow_status as MessageStatus]}`}>
+                      {quoteBrief.current_workflow_status}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4">
+                {quoteBriefLoading ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    Loading quote brief...
+                  </div>
+                ) : quoteBrief ? (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-800">{quoteBrief.service_label}</p>
+                          <p className="mt-1 text-sm text-slate-600">{quoteBrief.estimator_summary}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Lead score</p>
+                          <p className="text-2xl font-semibold text-slate-900">{quoteBrief.lead_score}/100</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Client</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.client_name || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Email</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.client_email || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Phone</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.client_phone || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Location</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.location || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Object type</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.object_type || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Timeline</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.timeline || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Budget</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.budget || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Urgency</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.urgency || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Installation type</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.installation_type || "—"}</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Attachments / docs</p>
+                        <p className="mt-1 text-sm text-slate-800">{quoteBrief.attachments_summary || "—"}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                      <p className="text-sm font-medium text-amber-900">Still missing before final quote</p>
+                      {quoteBrief.missing_fields.length > 0 ? (
+                        <ul className="mt-2 list-disc pl-5 text-sm text-amber-900">
+                          {quoteBrief.missing_fields.map((field, index) => (
+                            <li key={index}>{field}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-2 text-sm text-amber-900">No critical missing fields detected.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <p className="text-sm font-medium text-emerald-900">Recommended next step</p>
+                      <p className="mt-1 text-sm text-emerald-900">{quoteBrief.recommended_next_step}</p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={markReadyForSiteVisit}
+                        disabled={!selectedMessage || actionLoading !== null}
+                        className="rounded-2xl bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50"
+                      >
+                        Ready for site visit
+                      </button>
+
+                      <button
+                        onClick={markReadyForQuote}
+                        disabled={!selectedMessage || actionLoading !== null}
+                        className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                      >
+                        Ready for quote
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    Select and process a relevant inquiry to see the estimator handoff brief.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold">Electrical lead qualification</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Tailored intake view for electrical installations and solar inquiries.
+                  </p>
+                </div>
+
+                {electricalQualification && (
+                  <div className="flex flex-wrap gap-2">
+                    <span
+                      className={`rounded-xl px-2.5 py-1 text-xs font-medium ${serviceStyles[electricalQualification.service_type]}`}
+                    >
+                      {electricalQualification.service_label}
+                    </span>
+                    <span
+                      className={`rounded-xl px-2.5 py-1 text-xs font-medium ${priorityStyles[electricalQualification.lead_priority]}`}
+                    >
+                      {electricalQualification.lead_priority === "hot"
+                        ? "Hot lead"
+                        : electricalQualification.lead_priority === "needs_info"
+                          ? "Needs info"
+                          : "Low detail"}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4">
+                {qualificationLoading ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    Loading qualification...
+                  </div>
+                ) : electricalQualification ? (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-slate-800">Lead score</p>
+                        <span className="text-2xl font-semibold text-slate-900">
+                          {electricalQualification.lead_score}/100
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-600">
+                        {electricalQualification.client_summary}
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Object type</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.object_type || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Location</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.location || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Budget</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.budget || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Timeline</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.timeline || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Urgency</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.urgency || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Installation type</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.installation_type || "—"}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 p-3 md:col-span-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Attachments / docs</p>
+                        <p className="mt-1 text-sm text-slate-800">
+                          {electricalQualification.attachments_summary || "No attachment context detected."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                      <p className="text-sm font-medium text-amber-900">Missing technical details</p>
+                      {electricalQualification.missing_fields.length > 0 ? (
+                        <ul className="mt-2 list-disc pl-5 text-sm text-amber-900">
+                          {electricalQualification.missing_fields.map((field, index) => (
+                            <li key={index}>{field}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-2 text-sm text-amber-900">No critical missing fields detected.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <p className="text-sm font-medium text-emerald-900">Recommended next step</p>
+                      <p className="mt-1 text-sm text-emerald-900">
+                        {electricalQualification.recommended_next_step}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                    Process a relevant inquiry to see the electrical qualification view.
+                  </div>
+                )}
+              </div>
+            </div>
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-lg font-semibold">Quote summary</h3>

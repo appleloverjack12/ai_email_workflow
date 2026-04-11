@@ -33,6 +33,12 @@ from pwdlib import PasswordHash
 from datetime import timedelta, timezone
 from fastapi import Depends, status
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import StreamingResponse
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -43,7 +49,10 @@ load_dotenv()
 app = FastAPI(title="AI Email + Document Workflow API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,6 +62,7 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback"
 )
@@ -174,7 +184,39 @@ class CompanySettings(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
+
+class ElectricalServiceType(str, Enum):
+    strong_current = "strong_current"
+    weak_current = "weak_current"
+    solar = "solar"
+    maintenance = "maintenance"
+    project_design = "project_design"
+    unknown = "unknown"
+
+
+class LeadPriority(str, Enum):
+    hot = "hot"
+    needs_info = "needs_info"
+    low_detail = "low_detail"
+
+
+class ElectricalQualification(BaseModel):
+    service_type: ElectricalServiceType
+    service_label: str
+    object_type: Optional[str] = None
+    location: Optional[str] = None
+    budget: Optional[str] = None
+    timeline: Optional[str] = None
+    urgency: Optional[str] = None
+    power_capacity: Optional[str] = None
+    installation_type: Optional[str] = None
+    attachments_summary: Optional[str] = None
+    lead_priority: LeadPriority
+    lead_score: int
+    missing_fields: list[str]
+    recommended_next_step: str
+    client_summary: str
+
 class MessageStatus(str, Enum):
     new = "new"
     processing = "processing"
@@ -186,6 +228,8 @@ class MessageStatus(str, Enum):
     archived = "archived"
     ignored = "ignored"
     waiting_for_info = "waiting_for_info"
+    ready_for_quote = "ready_for_quote"
+    ready_for_site_visit = "ready_for_site_visit"
 
 
 class ApprovalStatus(str, Enum):
@@ -335,6 +379,25 @@ class MessageRead(BaseModel):
     gmail_synced_at: Optional[datetime] = None
     has_attachments: bool = False
 
+class ElectricalQuoteBrief(BaseModel):
+    service_type: ElectricalServiceType
+    service_label: str
+    lead_priority: LeadPriority
+    lead_score: int
+    current_workflow_status: str
+    client_name: Optional[str] = None
+    client_email: Optional[str] = None
+    client_phone: Optional[str] = None
+    location: Optional[str] = None
+    budget: Optional[str] = None
+    object_type: Optional[str] = None
+    timeline: Optional[str] = None
+    urgency: Optional[str] = None
+    installation_type: Optional[str] = None
+    attachments_summary: Optional[str] = None
+    missing_fields: list[str] = []
+    recommended_next_step: str
+    estimator_summary: str
 
 class DraftEditRequest(BaseModel):
     draft_text: str
@@ -510,11 +573,178 @@ def archive_gmail_message(service, gmail_message_id: str) -> dict:
         .execute()
     )
     
+    
 def get_user_by_email(session: Session, email: str) -> User | None:
     return session.exec(
         select(User).where(User.email == email.strip().lower())
     ).first()
 
+
+def safe_text(value: object) -> str:
+    if value is None:
+        return "—"
+    text = str(value).strip()
+    return text if text else "—"
+
+
+def get_message_notes_text(session: Session, message_id: int) -> str:
+    try:
+        notes = session.exec(
+            select(InternalNote)
+            .where(InternalNote.message_id == message_id)
+            .order_by(InternalNote.created_at.desc())
+        ).all()
+    except Exception:
+        return "—"
+
+    if not notes:
+        return "—"
+
+    parts: list[str] = []
+    for note in notes:
+        author = note.author or "Unknown"
+        created = note.created_at.strftime("%d.%m.%Y %H:%M") if note.created_at else ""
+        parts.append(f"{author} ({created}): {note.note_text}")
+
+    return "\n\n".join(parts)
+
+
+def get_message_documents_text(session: Session, message_id: int) -> str:
+    try:
+        docs = session.exec(
+            select(Document)
+            .where(Document.message_id == message_id)
+            .order_by(Document.created_at.desc())
+        ).all()
+    except Exception:
+        return "—"
+
+    if not docs:
+        return "—"
+
+    return "\n".join(
+        f"- {doc.filename} ({doc.file_type or 'unknown'})"
+        for doc in docs
+    )
+
+
+def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
+    brief = build_electrical_quote_brief(session, message)
+    notes_text = get_message_notes_text(session, message.id)
+    documents_text = get_message_documents_text(session, message.id)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    heading_style = styles["Heading2"]
+    normal_style = styles["BodyText"]
+
+    small_label = ParagraphStyle(
+        "SmallLabel",
+        parent=styles["BodyText"],
+        fontSize=9,
+        textColor=colors.HexColor("#64748b"),
+        spaceAfter=2,
+    )
+
+    value_style = ParagraphStyle(
+        "ValueStyle",
+        parent=styles["BodyText"],
+        fontSize=10,
+        textColor=colors.HexColor("#0f172a"),
+        leading=14,
+    )
+
+    story = []
+
+    story.append(Paragraph("Electrical Quote Brief", title_style))
+    story.append(Spacer(1, 6))
+
+    story.append(
+        Paragraph(
+            f"<b>Service:</b> {safe_text(brief.service_label)} &nbsp;&nbsp;&nbsp; "
+            f"<b>Lead score:</b> {safe_text(brief.lead_score)}/100 &nbsp;&nbsp;&nbsp; "
+            f"<b>Status:</b> {safe_text(brief.current_workflow_status)}",
+            normal_style,
+        )
+    )
+    story.append(Spacer(1, 10))
+
+    summary_table_data = [
+        [Paragraph("Client", small_label), Paragraph(safe_text(brief.client_name), value_style),
+         Paragraph("Email", small_label), Paragraph(safe_text(brief.client_email), value_style)],
+        [Paragraph("Phone", small_label), Paragraph(safe_text(brief.client_phone), value_style),
+         Paragraph("Location", small_label), Paragraph(safe_text(brief.location), value_style)],
+        [Paragraph("Object type", small_label), Paragraph(safe_text(brief.object_type), value_style),
+         Paragraph("Timeline", small_label), Paragraph(safe_text(brief.timeline), value_style)],
+        [Paragraph("Budget", small_label), Paragraph(safe_text(brief.budget), value_style),
+         Paragraph("Urgency", small_label), Paragraph(safe_text(brief.urgency), value_style)],
+        [Paragraph("Installation type", small_label), Paragraph(safe_text(brief.installation_type), value_style),
+         Paragraph("Priority", small_label), Paragraph(safe_text(brief.lead_priority.value), value_style)],
+    ]
+
+    summary_table = Table(summary_table_data, colWidths=[28 * mm, 57 * mm, 28 * mm, 57 * mm])
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#cbd5e1")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#e2e8f0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
+    story.append(summary_table)
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Estimator Summary", heading_style))
+    story.append(Paragraph(safe_text(brief.estimator_summary), normal_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Recommended Next Step", heading_style))
+    story.append(Paragraph(safe_text(brief.recommended_next_step), normal_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Missing Technical Details", heading_style))
+    if brief.missing_fields:
+        for item in brief.missing_fields:
+            story.append(Paragraph(f"• {safe_text(item)}", normal_style))
+    else:
+        story.append(Paragraph("No critical missing details detected.", normal_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Attachments / Documents", heading_style))
+    for line in safe_text(documents_text).split("\n"):
+        story.append(Paragraph(line, normal_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Attachment Summary", heading_style))
+    story.append(Paragraph(safe_text(brief.attachments_summary), normal_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Internal Notes", heading_style))
+    for block in safe_text(notes_text).split("\n\n"):
+        story.append(Paragraph(block.replace("\n", "<br/>"), normal_style))
+        story.append(Spacer(1, 4))
+
+    doc.build(story)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -550,6 +780,62 @@ def get_or_create_company_settings(session: Session) -> CompanySettings:
     session.commit()
     session.refresh(settings)
     return settings
+
+def extract_phone_number_from_text(text: str) -> str | None:
+    if not text:
+        return None
+
+    patterns = [
+        r"(\+385[\s/-]?\d{1,2}[\s/-]?\d{3}[\s/-]?\d{3,4})",
+        r"(0\d{1,2}[\s/-]?\d{3}[\s/-]?\d{3,4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+
+    return None
+
+def build_electrical_quote_brief(
+    session: Session,
+    message: Message,
+) -> ElectricalQuoteBrief:
+    context = build_message_context(session, message)
+    qualification = ai_qualify_electrical_lead(context)
+
+    client_name = message.sender_name or None
+    client_email = message.sender_email or None
+    client_phone = extract_phone_number_from_text(message.body_text or "")
+
+    estimator_summary = (
+        f"{qualification.service_label} | "
+        f"Prioritet: {qualification.lead_priority.value} | "
+        f"Lokacija: {qualification.location or 'nije navedena'} | "
+        f"Rok: {qualification.timeline or 'nije naveden'} | "
+        f"Budžet: {qualification.budget or 'nije naveden'}"
+    )
+
+    return ElectricalQuoteBrief(
+        service_type=qualification.service_type,
+        service_label=qualification.service_label,
+        lead_priority=qualification.lead_priority,
+        lead_score=qualification.lead_score,
+        current_workflow_status=message.status.value,
+        client_name=client_name,
+        client_email=client_email,
+        client_phone=client_phone,
+        location=qualification.location,
+        object_type=qualification.object_type,
+        budget=qualification.budget,
+        timeline=qualification.timeline,
+        urgency=qualification.urgency,
+        installation_type=qualification.installation_type,
+        attachments_summary=qualification.attachments_summary,
+        missing_fields=qualification.missing_fields,
+        recommended_next_step=qualification.recommended_next_step,
+        estimator_summary=estimator_summary,
+    )
 
 def build_tone_instruction(tone: ReplyTone) -> str:
     if tone == ReplyTone.friendly:
@@ -590,6 +876,39 @@ QUOTE_FIELD_LABELS = {
     "business_goals": "Business goals",
 }
 
+ELECTRICAL_REQUIRED_FIELDS = {
+    ElectricalServiceType.strong_current: [
+        "location",
+        "object_type",
+        "timeline",
+        "scope_of_work",
+    ],
+    ElectricalServiceType.weak_current: [
+        "location",
+        "object_type",
+        "system_type",
+        "scope_of_work",
+    ],
+    ElectricalServiceType.solar: [
+        "location",
+        "object_type",
+        "roof_or_ground",
+        "estimated_consumption",
+        "budget",
+        "timeline",
+    ],
+    ElectricalServiceType.maintenance: [
+        "location",
+        "urgency",
+        "issue_description",
+    ],
+    ElectricalServiceType.project_design: [
+        "location",
+        "object_type",
+        "project_scope",
+        "timeline",
+    ],
+}
 
 def is_quote_category(category: object) -> bool:
     value = str(getattr(category, "value", category)).lower()
@@ -1399,6 +1718,56 @@ def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
     parsed.confidence = clamp_confidence(parsed.confidence)
     return parsed
 
+def ai_qualify_electrical_lead(context: str) -> ElectricalQualification:
+    prompt = f"""
+You are qualifying inbound leads for an electrical installations company in Croatia.
+
+Classify the inquiry into one of these service types:
+- strong_current
+- weak_current
+- solar
+- maintenance
+- project_design
+- unknown
+
+Return:
+- service_type
+- service_label in Croatian
+- object_type
+- location
+- budget
+- timeline
+- urgency
+- power_capacity
+- installation_type
+- attachments_summary
+- lead_priority
+- lead_score from 1 to 100
+- missing_fields as a list
+- recommended_next_step
+- client_summary
+
+Rules:
+- Use Croatian labels when possible.
+- Focus on practical sales qualification for electrical works.
+- If details are vague, mark lead_priority as needs_info or low_detail.
+- If message clearly describes a real project with location/scope/timeline, score it higher.
+- Missing fields should be concise and useful.
+- recommended_next_step should be one short action like:
+  "Zatraži dodatne tehničke informacije"
+  "Pripremi ponudu"
+  "Dogovori izvid na lokaciji"
+
+Context:
+{context}
+"""
+
+    response = openai_client.responses.parse(
+        model="gpt-5.4-mini",
+        input=prompt,
+        text_format=ElectricalQualification,
+    )
+    return response.output_parsed
 
 def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutput:
     client = get_openai_client()
@@ -1473,6 +1842,83 @@ def ai_draft_reply(
 
     return parsed
 
+def merge_unique_strings(*lists: list[str]) -> list[str]:
+    merged: list[str] = []
+    for values in lists:
+        for value in values:
+            item = str(value).strip()
+            if item and item not in merged:
+                merged.append(item)
+    return merged
+
+
+def build_electrical_missing_info_guidance(
+    qualification: ElectricalQualification,
+) -> str:
+    service_type = qualification.service_type
+
+    if service_type == ElectricalServiceType.strong_current:
+        return (
+            "Lead je za elektroinstalacije jake struje.\n"
+            "Ako nešto nedostaje, prioritetno traži:\n"
+            "- tlocrt ili nacrt objekta\n"
+            "- broj prostorija i planirane točke rasvjete/utičnica\n"
+            "- je li riječ o novogradnji ili adaptaciji\n"
+            "- priključnu snagu objekta ako je poznata\n"
+            "- detalje za EV punjač ako se spominje\n"
+            "Piši kao profesionalan izvođač elektroinstalacija u Hrvatskoj."
+        )
+
+    if service_type == ElectricalServiceType.weak_current:
+        return (
+            "Lead je za instalacije slabe struje.\n"
+            "Ako nešto nedostaje, prioritetno traži:\n"
+            "- vrstu sustava (video nadzor, alarm, parlafon, mreža, kontrola pristupa)\n"
+            "- broj uređaja/točaka\n"
+            "- stanje postojeće infrastrukture i kabliranja\n"
+            "- tlocrt ili fotografije prostora\n"
+            "Piši jasno, tehnički i profesionalno."
+        )
+
+    if service_type == ElectricalServiceType.solar:
+        return (
+            "Lead je za solarnu elektranu.\n"
+            "Ako nešto nedostaje, prioritetno traži:\n"
+            "- adresu/lokaciju objekta\n"
+            "- je li montaža na krovu ili na tlu\n"
+            "- približnu godišnju ili mjesečnu potrošnju električne energije\n"
+            "- fotografije krova ili dokumentaciju objekta\n"
+            "- vrstu objekta i okvirni budžet\n"
+            "Piši profesionalno i praktično, kao tvrtka koja priprema ponudu za fotonaponski sustav."
+        )
+
+    if service_type == ElectricalServiceType.maintenance:
+        return (
+            "Lead je za održavanje ili intervenciju.\n"
+            "Ako nešto nedostaje, prioritetno traži:\n"
+            "- točan opis kvara ili problema\n"
+            "- lokaciju objekta\n"
+            "- hitnost intervencije\n"
+            "- termin dostupnosti na lokaciji\n"
+            "Piši kratko, jasno i usmjereno na dogovor sljedećeg koraka."
+        )
+
+    if service_type == ElectricalServiceType.project_design:
+        return (
+            "Lead je za projektiranje ili automatizaciju.\n"
+            "Ako nešto nedostaje, prioritetno traži:\n"
+            "- opis projekta i cilja\n"
+            "- vrstu objekta\n"
+            "- postojeću dokumentaciju\n"
+            "- planirani rok\n"
+            "- budžet ili okvir opsega\n"
+            "Piši profesionalno i konzultativno."
+        )
+
+    return (
+        "Ako je riječ o tehničkom elektro upitu, zatraži samo ključne informacije "
+        "potrebne za izradu ponude ili dogovor sljedećeg koraka."
+    )
 
 def ai_draft_missing_info(
     category: MessageCategory,
@@ -1482,21 +1928,58 @@ def ai_draft_missing_info(
 ) -> DraftOutput:
     client = get_openai_client()
 
+    qualification: ElectricalQualification | None = None
+    electrical_guidance = ""
+    qualification_missing_fields: list[str] = []
+
+    try:
+        qualification = ai_qualify_electrical_lead(context)
+        qualification_missing_fields = qualification.missing_fields or []
+        electrical_guidance = build_electrical_missing_info_guidance(qualification)
+    except Exception:
+        qualification = None
+        qualification_missing_fields = []
+        electrical_guidance = ""
+
+    extracted_missing = extracted.missing_information or []
+    merged_missing = merge_unique_strings(
+        extracted_missing,
+        qualification_missing_fields,
+    )
+
     response = client.responses.parse(
         model=get_model_name(),
         reasoning={"effort": "none"},
         input=[
-            {"role": "system", "content": MISSING_INFO_DRAFT_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": (
+                    MISSING_INFO_DRAFT_SYSTEM_PROMPT
+                    + "\n\n"
+                    + "DODATNA PRAVILA:\n"
+                    + "- Ako je upit tehnički i vezan za elektroinstalacije, solar, održavanje ili slabu/jaku struju, odgovor piši na hrvatskom jeziku.\n"
+                    + "- Ton neka bude profesionalan, jasan i poslovan.\n"
+                    + "- Ne nabrajaj nepotrebne informacije koje već postoje u upitu.\n"
+                    + "- Traži samo podatke koji zaista nedostaju za kvalifikaciju ili pripremu ponude.\n"
+                    + "- Ako je upit dovoljno kompletan, reci da zahtjev izgleda dovoljno kompletno za daljnji pregled i pripremu ponude.\n"
+                ),
+            },
             {
                 "role": "user",
                 "content": (
                     f"Category: {category.value}\n"
                     f"Sender name: {sender_name or 'there'}\n\n"
                     "IMPORTANT:\n"
-                    "- Only ask for the items listed in missing_information.\n"
-                    "- If missing_information is empty, write a short reply saying the request looks complete enough to review for a quote.\n"
-                    "- If ATTACHED DOCUMENT TEXT exists, assume the attachment was received and reviewed.\n\n"
+                    "- Only ask for the items listed in FINAL_MISSING_INFORMATION.\n"
+                    "- If FINAL_MISSING_INFORMATION is empty, write a short reply saying the request looks complete enough to review for a quote.\n"
+                    "- If ATTACHED DOCUMENT TEXT exists, assume the attachment was received and reviewed.\n"
+                    "- If the inquiry is clearly electrical/solar/technical, prefer Croatian.\n"
+                    "- Keep the email concise and natural.\n\n"
+                    f"Electrical qualification JSON:\n"
+                    f"{qualification.model_dump_json(indent=2) if qualification else 'null'}\n\n"
+                    f"Service-specific drafting guidance:\n{electrical_guidance or 'No special electrical guidance.'}\n\n"
                     f"Extracted fields JSON:\n{extracted.model_dump_json(indent=2)}\n\n"
+                    f"FINAL_MISSING_INFORMATION:\n{json.dumps(merged_missing, ensure_ascii=False, indent=2)}\n\n"
                     f"{context}\n\n"
                     "Write the best follow-up email requesting missing information."
                 ),
@@ -1664,6 +2147,83 @@ def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
         return user
 
 
+@app.get("/messages/{message_id}/quote-brief.pdf")
+def export_quote_brief_pdf(message_id: int):
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        pdf_bytes = build_quote_brief_pdf_bytes(session, message)
+
+    filename = f"quote-brief-message-{message_id}.pdf"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+@app.get("/messages/{message_id}/quote-brief")
+def get_quote_brief(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        brief = build_electrical_quote_brief(session, message)
+        return brief.model_dump()
+    
+    
+    
+@app.post("/messages/{message_id}/ready-for-site-visit")
+def mark_ready_for_site_visit(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.ready_for_site_visit
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "marked_ready_for_site_visit",
+            "operator",
+            metadata_json=json.dumps({"status": message.status.value}),
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
+
+
+@app.post("/messages/{message_id}/ready-for-quote")
+def mark_ready_for_quote(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        message.status = MessageStatus.ready_for_quote
+        message.updated_at = datetime.utcnow()
+
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session,
+            message_id,
+            "marked_ready_for_quote",
+            "operator",
+            metadata_json=json.dumps({"status": message.status.value}),
+        )
+
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "status": message.status,
+        }
+
 @app.post("/auth/login", response_model=TokenResponse)
 def login(payload: LoginRequest) -> TokenResponse:
     with Session(engine, expire_on_commit=False) as session:
@@ -1710,7 +2270,16 @@ def update_settings(payload: CompanySettingsUpdate) -> CompanySettingsRead:
 
         return company_settings_to_read(settings)
 
-
+@app.get("/messages/{message_id}/electrical-qualification")
+def get_electrical_qualification(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        print("ELECTRICAL QUALIFICATION ROUTE HIT", message_id)
+        message = get_message_or_404(session, message_id)
+        context = build_message_context(session, message)
+        qualification = ai_qualify_electrical_lead(context)
+        print("ELECTRICAL QUALIFICATION RESULT", qualification)
+        return qualification.model_dump()
+    
 @app.get("/auth/me", response_model=UserRead)
 def auth_me(current_user: User = Depends(get_current_user)) -> UserRead:
     return UserRead(
@@ -1720,6 +2289,14 @@ def auth_me(current_user: User = Depends(get_current_user)) -> UserRead:
         role=current_user.role,
         is_active=current_user.is_active,
     )
+
+@app.get("/messages/{message_id}/electrical-qualification")
+def get_electrical_qualification(message_id: int) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        context = build_message_context(session, message)
+        qualification = ai_qualify_electrical_lead(context)
+        return qualification.model_dump()
 
 @app.get("/messages", response_model=list[MessageRead])
 def list_messages(current_user: User = Depends(get_current_user)) -> list[Message]:
