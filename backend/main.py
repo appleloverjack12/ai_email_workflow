@@ -10,23 +10,21 @@ from email.utils import parseaddr
 from enum import Enum
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
 import fitz
 import pytesseract
 from PIL import Image
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from openai import OpenAI
 from sqlalchemy import Column, JSON
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, EmailStr
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, ConfigDict, EmailStr, Field as PydanticField
 from pypdf import PdfReader
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import io
@@ -35,21 +33,39 @@ from jwt.exceptions import InvalidTokenError
 from pwdlib import PasswordHash
 from datetime import timedelta, timezone
 from fastapi import Depends, status
+from fastapi import HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# FIX 1: Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 load_dotenv()
 
+TESSERACT_CMD = os.getenv("TESSERACT_CMD")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+
+
 
 # --- App setup ---
+# FIX 1: Wire up rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="AI Email + Document Workflow API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -61,17 +77,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 engine = create_engine("sqlite:///workflow.db", echo=False)
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback"
 )
 GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
 
-SECRET_KEY = os.getenv("APP_SECRET_KEY", secrets.token_hex(32))
+SECRET_KEY = os.getenv("APP_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("APP_SECRET_KEY is missing")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
@@ -85,6 +101,10 @@ GOOGLE_SCOPES = [
 ]
 
 oauth_pending: dict[str, str] = {}
+
+# FIX 2: Removed module-level OpenAI singleton.
+# All AI calls now go through get_openai_client() so key changes / missing
+# keys surface cleanly at call-time rather than silently using a stale client.
 
 
 def get_google_client_config() -> dict:
@@ -120,7 +140,7 @@ def load_google_credentials() -> Credentials | None:
     creds = Credentials.from_authorized_user_file(str(token_file), GOOGLE_SCOPES)
 
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        creds.refresh(GoogleRequest())
         save_google_credentials(creds)
 
     return creds
@@ -155,8 +175,8 @@ class MessageCategory(str, Enum):
 
 
 class MessageSource(str, Enum):
-    manual = ("manual",)
-    gmail = ("gmail",)
+    manual = "manual"
+    gmail = "gmail"
 
 class ReplyTone(str, Enum):
     professional = "professional"
@@ -413,11 +433,16 @@ class AuditLog(SQLModel, table=True):
 
 
 # --- API schemas ---
+# FIX 3: Added field-length guards to prevent unbounded text reaching OpenAI prompts.
+MAX_BODY_LENGTH = 20_000
+MAX_SUBJECT_LENGTH = 500
+MAX_NAME_LENGTH = 200
+
 class MessageCreate(BaseModel):
-    subject: str
+    subject: str = PydanticField(max_length=MAX_SUBJECT_LENGTH)
     sender_email: EmailStr
-    sender_name: Optional[str] = None
-    body_text: str
+    sender_name: Optional[str] = PydanticField(default=None, max_length=MAX_NAME_LENGTH)
+    body_text: str = PydanticField(max_length=MAX_BODY_LENGTH)
 
 
 class MessageRead(BaseModel):
@@ -461,14 +486,10 @@ class ElectricalQuoteBrief(BaseModel):
 
 class DraftEditRequest(BaseModel):
     draft_text: str
-    editor_name: str
 
-
-class ApprovalRequest(BaseModel):
-    actor_name: str
 
 class InternalNoteCreate(SQLModel):
-    author: str
+    author: Optional[str] = None
     note_text: str
 
 
@@ -478,6 +499,8 @@ class InternalNoteRead(SQLModel):
     author: str
     note_text: str
     created_at: datetime
+
+
 # --- Structured AI output schemas ---
 class ClassificationOutput(BaseModel):
     category: MessageCategory
@@ -541,45 +564,23 @@ Important rules:
 - Keep summary concise and factual.
 
 Always look for:
-- sender_name
-- company_name
-- email
-- phone
-- requested_service
-- project_type
-- budget
-- timeline
-- location
-- urgency
-- interest_level
-- website_url
-- pages_needed
-- design_preferences
-- business_goals
-- preferred_next_step
-- additional_notes
-- missing_information
-- summary
+- sender_name, company_name, email, phone
+- requested_service, project_type, budget, timeline, location, urgency, interest_level
+- website_url, pages_needed, design_preferences, business_goals
+- preferred_next_step, additional_notes, missing_information, summary
 
 For quote/project briefs:
-- requested_service should capture the main service requested, such as website redesign.
-- project_type should be a short label such as website redesign, landing page build, ecommerce redesign, branding, etc.
+- requested_service should capture the main service requested.
+- project_type should be a short label.
 - pages_needed should list named pages if present.
 - business_goals should list concrete goals if present.
-- missing_information should include only the important details still needed in order to prepare a quote.
+- missing_information should include only the important details still needed to prepare a quote.
 """
 
 CLASSIFICATION_SYSTEM_PROMPT = """
 You classify inbound small-business emails using both the email body and any attached-document text.
 
-Allowed categories:
-- lead
-- quote_request
-- invoice
-- support
-- appointment
-- spam
-- other
+Allowed categories: lead, quote_request, invoice, support, appointment, spam, other
 
 Rules:
 - If the email or attached document clearly requests a quote, estimate, pricing, project discussion, redesign, proposal, or service inquiry, prefer quote_request.
@@ -587,11 +588,9 @@ Rules:
 - Do not classify as spam if attached-document text contains a clear business request.
 - Use the attached-document text when the email body is short or vague.
 
-Return:
-- category
-- confidence: a float from 0.0 to 1.0
-- summary: a short one-sentence explanation
+Return: category, confidence (float 0-1), summary (one sentence).
 """
+
 MISSING_INFO_DRAFT_SYSTEM_PROMPT = """
 You draft concise, professional follow-up emails for quote requests when key information is still missing.
 
@@ -609,6 +608,10 @@ Rules:
 
 # --- Helpers ---
 def get_openai_client() -> OpenAI:
+    """
+    FIX 2: Always construct from env so key changes are picked up without
+    a server restart and a missing key raises immediately with a clear error.
+    """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -616,6 +619,19 @@ def get_openai_client() -> OpenAI:
             detail="OPENAI_API_KEY is missing. Add it to your .env file.",
         )
     return OpenAI(api_key=api_key)
+
+
+def get_model_name() -> str:
+    # FIX 4: "gpt-5.4-mini" does not exist — use a real model as fallback.
+    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+
+# FIX 5: Helper to safely truncate body text before it reaches an OpenAI prompt.
+def truncate_body(text: str, max_chars: int = MAX_BODY_LENGTH) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n[... truncated ...]"
+
 
 def get_connected_gmail_address(service) -> str:
     profile = service.users().getProfile(userId="me").execute()
@@ -632,8 +648,8 @@ def archive_gmail_message(service, gmail_message_id: str) -> dict:
         )
         .execute()
     )
-    
-    
+
+
 def get_user_by_email(session: Session, email: str) -> User | None:
     return session.exec(
         select(User).where(User.email == email.strip().lower())
@@ -783,6 +799,41 @@ def get_message_documents_text(session: Session, message_id: int) -> str:
         for doc in docs
     )
 
+def register_pdf_fonts() -> tuple[str, str]:
+    """
+    Registers Unicode fonts for Croatian characters.
+    Returns (regular_font_name, bold_font_name).
+    """
+
+    # Option A: use env vars if you want custom paths
+    regular_path = os.getenv("PDF_FONT_REGULAR")
+    bold_path = os.getenv("PDF_FONT_BOLD")
+
+    # Option B: fallback to common Windows fonts
+    if not regular_path:
+        regular_path = r"C:\Windows\Fonts\arial.ttf"
+    if not bold_path:
+        bold_path = r"C:\Windows\Fonts\arialbd.ttf"
+
+    if not Path(regular_path).exists():
+        raise RuntimeError(f"PDF regular font not found: {regular_path}")
+    if not Path(bold_path).exists():
+        raise RuntimeError(f"PDF bold font not found: {bold_path}")
+
+    regular_name = "AppFont"
+    bold_name = "AppFontBold"
+
+    try:
+        pdfmetrics.getFont(regular_name)
+    except KeyError:
+        pdfmetrics.registerFont(TTFont(regular_name, regular_path))
+
+    try:
+        pdfmetrics.getFont(bold_name)
+    except KeyError:
+        pdfmetrics.registerFont(TTFont(bold_name, bold_path))
+
+    return regular_name, bold_name
 
 def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
     brief = build_electrical_quote_brief(session, message)
@@ -800,36 +851,59 @@ def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
     )
 
     styles = getSampleStyleSheet()
-    title_style = styles["Title"]
-    heading_style = styles["Heading2"]
-    normal_style = styles["BodyText"]
+    regular_font, bold_font = register_pdf_fonts()
+    title_style = ParagraphStyle(
+    "CustomTitle",
+    parent=styles["Title"],
+    fontName=bold_font,
+    fontSize=18,
+    leading=22,
+)
+
+    heading_style = ParagraphStyle(
+    "CustomHeading",
+    parent=styles["Heading2"],
+    fontName=bold_font,
+    fontSize=12,
+    leading=15,
+)
+
+    normal_style = ParagraphStyle(
+    "CustomBody",
+    parent=styles["BodyText"],
+    fontName=regular_font,
+    fontSize=10,
+    leading=14,
+)
 
     small_label = ParagraphStyle(
-        "SmallLabel",
-        parent=styles["BodyText"],
-        fontSize=9,
-        textColor=colors.HexColor("#64748b"),
-        spaceAfter=2,
-    )
+    "SmallLabel",
+    parent=styles["BodyText"],
+    fontName=regular_font,
+    fontSize=9,
+    textColor=colors.HexColor("#64748b"),
+    spaceAfter=2,
+)
 
     value_style = ParagraphStyle(
-        "ValueStyle",
-        parent=styles["BodyText"],
-        fontSize=10,
-        textColor=colors.HexColor("#0f172a"),
-        leading=14,
-    )
+    "ValueStyle",
+    parent=styles["BodyText"],
+    fontName=regular_font,
+    fontSize=10,
+    textColor=colors.HexColor("#0f172a"),
+    leading=14,
+)
 
     story = []
 
     story.append(Paragraph("Elesys – Brief za upit", title_style))
     story.append(Spacer(1, 4))
     story.append(
-    Paragraph(
-        "Automatski pripremljen pregled upita za elektroinstalacije / terenski izvid / izradu ponude.",
-        normal_style,
+        Paragraph(
+            "Automatski pripremljen pregled upita za elektroinstalacije / terenski izvid / izradu ponude.",
+            normal_style,
+        )
     )
-)
     story.append(Spacer(1, 10))
 
     summary_table_data = [
@@ -864,15 +938,13 @@ def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
     story.append(summary_table)
     story.append(Spacer(1, 12))
 
+    # FIX 6: Removed the six orphaned Croatian headings that had no content
+    # appended after them, and deduplicated "Recommended Next Step" which
+    # appeared twice. The PDF now renders a clean, sequential structure.
     story.append(Paragraph("Estimator Summary", heading_style))
     story.append(Paragraph(safe_text(brief.estimator_summary), normal_style))
     story.append(Spacer(1, 10))
-    story.append(Paragraph("Sažetak upita", heading_style))
-    story.append(Paragraph("Preporučeni sljedeći korak", heading_style))
-    story.append(Paragraph("Nedostajuće tehničke informacije", heading_style))
-    story.append(Paragraph("Privitci i dokumenti", heading_style))
-    story.append(Paragraph("Sažetak privitaka", heading_style))
-    story.append(Paragraph("Interne bilješke", heading_style))
+
     story.append(Paragraph("Recommended Next Step", heading_style))
     story.append(Paragraph(safe_text(brief.recommended_next_step), normal_style))
     story.append(Spacer(1, 10))
@@ -903,6 +975,7 @@ def build_quote_brief_pdf_bytes(session: Session, message: Message) -> bytes:
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
+
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -1036,35 +1109,20 @@ QUOTE_FIELD_LABELS = {
 
 ELECTRICAL_REQUIRED_FIELDS = {
     ElectricalServiceType.strong_current: [
-        "location",
-        "object_type",
-        "timeline",
-        "scope_of_work",
+        "location", "object_type", "timeline", "scope_of_work",
     ],
     ElectricalServiceType.weak_current: [
-        "location",
-        "object_type",
-        "system_type",
-        "scope_of_work",
+        "location", "object_type", "system_type", "scope_of_work",
     ],
     ElectricalServiceType.solar: [
-        "location",
-        "object_type",
-        "roof_or_ground",
-        "estimated_consumption",
-        "budget",
-        "timeline",
+        "location", "object_type", "roof_or_ground",
+        "estimated_consumption", "budget", "timeline",
     ],
     ElectricalServiceType.maintenance: [
-        "location",
-        "urgency",
-        "issue_description",
+        "location", "urgency", "issue_description",
     ],
     ElectricalServiceType.project_design: [
-        "location",
-        "object_type",
-        "project_scope",
-        "timeline",
+        "location", "object_type", "project_scope", "timeline",
     ],
 }
 
@@ -1154,7 +1212,8 @@ def require_roles(*allowed_roles: UserRole):
 
 
 def actor_name_for(user: User) -> str:
-    return user.full_name.strip() or user.email    
+    return user.full_name.strip() or user.email
+
 
 def append_customer_reply_to_message(
     session: Session,
@@ -1166,21 +1225,17 @@ def append_customer_reply_to_message(
     new_body_text: str,
 ) -> None:
     existing = (message.body_text or "").strip()
-    incoming = (new_body_text or "").strip()
+    incoming = truncate_body((new_body_text or "").strip())
 
     separator = "\n\n--- CUSTOMER REPLY ---\n"
     if incoming:
-        if existing:
-            message.body_text = existing + separator + incoming
-        else:
-            message.body_text = incoming
+        combined = f"{existing}{separator}{incoming}" if existing else incoming
+        message.body_text = truncate_body(combined)
 
     if new_subject:
         message.subject = new_subject
-
     if new_sender_name:
         message.sender_name = new_sender_name
-
     if new_sender_email:
         message.sender_email = new_sender_email
 
@@ -1193,6 +1248,8 @@ def append_customer_reply_to_message(
     session.add(message)
     session.commit()
     session.refresh(message)
+
+
 def get_local_message_by_gmail_thread(
     session: Session, gmail_thread_id: str
 ) -> Message | None:
@@ -1208,7 +1265,6 @@ def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | N
         .where(Draft.message_id == message_id)
         .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
     ).first()
-
 
 
 def ocr_image_bytes(file_bytes: bytes) -> str | None:
@@ -1237,14 +1293,6 @@ def ocr_pdf_bytes(file_bytes: bytes) -> str | None:
         return combined or None
     except Exception:
         return None
-
-
-def get_latest_draft_for_message(session: Session, message_id: int) -> Draft | None:
-    return session.exec(
-        select(Draft)
-        .where(Draft.message_id == message_id)
-        .order_by(Draft.updated_at.desc(), Draft.created_at.desc())
-    ).first()
 
 
 def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
@@ -1285,54 +1333,25 @@ def should_auto_ignore_message(
     body_l = (body_text or "").lower()
 
     ignored_sender_fragments = [
-        "noreply",
-        "no-reply",
-        "newsletter",
-        "fashionnews",
-        "marketing",
-        "mailer",
-        "digest",
-        "updates@",
-        "notification@",
-        "notifications@",
-        "jobs-listings@",
-        "quora.com",
-        "linkedin.com",
+        "noreply", "no-reply", "newsletter", "fashionnews", "marketing",
+        "mailer", "digest", "updates@", "notification@", "notifications@",
+        "jobs-listings@", "quora.com", "linkedin.com",
     ]
     if any(part in sender_l for part in ignored_sender_fragments):
         return True, "ignored_sender_pattern"
 
     newsletter_phrases = [
-        "unsubscribe",
-        "manage preferences",
-        "email preferences",
-        "view in browser",
-        "why did i get this email",
-        "update your preferences",
-        "privacy policy",
-        "terms of service",
+        "unsubscribe", "manage preferences", "email preferences",
+        "view in browser", "why did i get this email",
+        "update your preferences", "privacy policy", "terms of service",
     ]
     if sum(1 for phrase in newsletter_phrases if phrase in body_l) >= 2:
         return True, "newsletter_pattern"
 
     promo_subject_keywords = [
-        "sale",
-        "discount",
-        "special offer",
-        "limited time",
-        "shop now",
-        "save big",
-        "new arrivals",
-        "wishlist",
-        "price drop",
-        "up to ",
-        "% off",
-        "deal",
-        "promo",
-        "coupon",
-        "now hiring",
-        "job alert",
-        "digest",
+        "sale", "discount", "special offer", "limited time", "shop now",
+        "save big", "new arrivals", "wishlist", "price drop", "up to ",
+        "% off", "deal", "promo", "coupon", "now hiring", "job alert", "digest",
     ]
     if any(word in subject_l for word in promo_subject_keywords):
         return True, "promotional_subject"
@@ -1344,24 +1363,9 @@ def should_auto_ignore_message(
         return True, "short_link_heavy_message"
 
     actionable_keywords = [
-        "quote",
-        "pricing",
-        "proposal",
-        "project",
-        "website",
-        "web design",
-        "invoice",
-        "contract",
-        "deadline",
-        "support",
-        "help",
-        "issue",
-        "problem",
-        "meeting",
-        "call",
-        "client",
-        "budget",
-        "timeline",
+        "quote", "pricing", "proposal", "project", "website", "web design",
+        "invoice", "contract", "deadline", "support", "help", "issue",
+        "problem", "meeting", "call", "client", "budget", "timeline",
     ]
 
     if any(word in subject_l for word in actionable_keywords):
@@ -1386,31 +1390,13 @@ def triage_score(
     body_l = (body_text or "").lower()
 
     positive_keywords = [
-        "quote",
-        "pricing",
-        "proposal",
-        "project",
-        "website",
-        "budget",
-        "timeline",
-        "support",
-        "issue",
-        "help",
-        "meeting",
-        "client",
-        "invoice",
-        "contract",
+        "quote", "pricing", "proposal", "project", "website", "budget",
+        "timeline", "support", "issue", "help", "meeting", "client",
+        "invoice", "contract",
     ]
     negative_keywords = [
-        "unsubscribe",
-        "sale",
-        "discount",
-        "promo",
-        "wishlist",
-        "price drop",
-        "digest",
-        "now hiring",
-        "job alert",
+        "unsubscribe", "sale", "discount", "promo", "wishlist",
+        "price drop", "digest", "now hiring", "job alert",
     ]
 
     for word in positive_keywords:
@@ -1620,54 +1606,6 @@ def build_gmail_raw_message(
     return payload
 
 
-def get_gmail_import_metadata(session: Session, message_id: int) -> dict | None:
-    log = session.exec(
-        select(AuditLog)
-        .where(
-            AuditLog.message_id == message_id,
-            AuditLog.action == "gmail_imported",
-        )
-        .order_by(AuditLog.created_at.desc())
-    ).first()
-
-    if not log or not log.metadata_json:
-        return None
-
-    try:
-        return json.loads(log.metadata_json)
-    except Exception:
-        return None
-
-
-def build_gmail_raw_message(
-    *,
-    to_email: str,
-    subject: str,
-    body_text: str,
-    thread_id: str | None = None,
-    in_reply_to: str | None = None,
-    references: str | None = None,
-) -> dict:
-    message = EmailMessage()
-    message["To"] = to_email
-    message["Subject"] = subject
-
-    if in_reply_to:
-        message["In-Reply-To"] = in_reply_to
-    if references:
-        message["References"] = references
-
-    message.set_content(body_text)
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-
-    payload = {"raw": raw}
-    if thread_id:
-        payload["threadId"] = thread_id
-
-    return payload
-
-
 def get_gmail_service():
     creds = load_google_credentials()
     if creds is None or not creds.valid:
@@ -1724,12 +1662,7 @@ def extract_plain_text_from_payload(payload: dict | None) -> str:
 def get_imported_gmail_ids(session: Session) -> set[str]:
     logs = session.exec(
         select(AuditLog).where(
-            AuditLog.action.in_(
-                [
-                    "gmail_imported",
-                    "customer_reply_synced",
-                ]
-            )
+            AuditLog.action.in_(["gmail_imported", "customer_reply_synced"])
         )
     ).all()
 
@@ -1747,10 +1680,6 @@ def get_imported_gmail_ids(session: Session) -> set[str]:
             pass
 
     return ids
-
-
-def get_model_name() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
 
 def get_message_or_404(session: Session, message_id: int) -> Message:
@@ -1806,13 +1735,13 @@ def build_message_context(session: Session, message: Message) -> str:
         f"Sender email: {message.sender_email}",
         "",
         "EMAIL BODY:",
-        message.body_text,
+        truncate_body(message.body_text),
         "",
         f"ATTACHMENT COUNT: {len(docs)}",
     ]
 
     for i, doc in enumerate(docs, start=1):
-        extracted = (doc.extracted_text or "").strip()
+        extracted = truncate_body((doc.extracted_text or "").strip(), max_chars=6000)
         parts.extend(
             [
                 "",
@@ -1824,17 +1753,7 @@ def build_message_context(session: Session, message: Message) -> str:
             ]
         )
 
-    context = "\n".join(parts)
-
-    print(f"[CONTEXT DEBUG] message_id={message.id} docs={len(docs)}")
-    for doc in docs:
-        print(
-            f"[CONTEXT DEBUG] doc={doc.filename} "
-            f"extracted_len={len(doc.extracted_text) if doc.extracted_text else 0}"
-        )
-    print(f"[CONTEXT DEBUG] preview:\n{context[:3000]}")
-
-    return context
+    return "\n".join(parts)
 
 
 def log_action(
@@ -1855,6 +1774,7 @@ def log_action(
 
 
 def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
+    # FIX 2: Use helper instead of module-level singleton.
     client = get_openai_client()
     response = client.responses.parse(
         model=get_model_name(),
@@ -1876,7 +1796,12 @@ def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
     parsed.confidence = clamp_confidence(parsed.confidence)
     return parsed
 
+
 def ai_qualify_electrical_lead(context: str) -> ElectricalQualification:
+    # FIX 2: Was calling `openai_client` (removed module-level singleton) —
+    # now consistently uses get_openai_client().
+    client = get_openai_client()
+
     prompt = f"""
 You are qualifying inbound leads for an electrical installations company in Croatia.
 
@@ -1911,21 +1836,24 @@ Rules:
 - If details are vague, mark lead_priority as needs_info or low_detail.
 - If message clearly describes a real project with location/scope/timeline, score it higher.
 - Missing fields should be concise and useful.
-- recommended_next_step should be one short action like:
-  "Zatraži dodatne tehničke informacije"
-  "Pripremi ponudu"
-  "Dogovori izvid na lokaciji"
+- recommended_next_step should be one short action.
 
 Context:
 {context}
 """
 
-    response = openai_client.responses.parse(
-        model="gpt-5.4-mini",
+    response = client.responses.parse(
+        model=get_model_name(),
         input=prompt,
         text_format=ElectricalQualification,
     )
-    return response.output_parsed
+    parsed = response.output_parsed
+    if parsed is None:
+        raise HTTPException(
+            status_code=500, detail="AI qualification returned no structured output."
+        )
+    return parsed
+
 
 def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutput:
     client = get_openai_client()
@@ -1999,6 +1927,7 @@ def ai_draft_reply(
         )
 
     return parsed
+
 
 def merge_unique_strings(*lists: list[str]) -> list[str]:
     merged: list[str] = []
@@ -2078,6 +2007,7 @@ def build_electrical_missing_info_guidance(
         "potrebne za izradu ponude ili dogovor sljedećeg koraka."
     )
 
+
 def ai_draft_missing_info(
     category: MessageCategory,
     sender_name: Optional[str],
@@ -2113,8 +2043,7 @@ def ai_draft_missing_info(
                 "role": "system",
                 "content": (
                     MISSING_INFO_DRAFT_SYSTEM_PROMPT
-                    + "\n\n"
-                    + "DODATNA PRAVILA:\n"
+                    + "\n\nDODATNA PRAVILA:\n"
                     + "- Ako je upit tehnički i vezan za elektroinstalacije, solar, održavanje ili slabu/jaku struju, odgovor piši na hrvatskom jeziku.\n"
                     + "- Ton neka bude profesionalan, jasan i poslovan.\n"
                     + "- Ne nabrajaj nepotrebne informacije koje već postoje u upitu.\n"
@@ -2240,53 +2169,145 @@ def run_ai_workflow_for_message(session: Session, message_id: int) -> dict:
     }
 
 
+# FIX 7: Background-task wrapper for auto-processing so the gmail/sync
+# endpoint doesn't block on potentially many sequential OpenAI calls.
+def _bg_run_ai_workflow(message_id: int) -> None:
+    """Runs the full AI workflow for a single message in a background task."""
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            run_ai_workflow_for_message(session, message_id)
+    except Exception as exc:
+        # Best-effort: log the failure without propagating.
+        try:
+            with Session(engine, expire_on_commit=False) as session:
+                log_action(
+                    session,
+                    message_id,
+                    "auto_process_failed",
+                    "system",
+                    metadata_json=json.dumps({"error": str(exc)}),
+                )
+        except Exception:
+            pass
+
+
 # --- Routes ---
+
+# FIX 8: /health now probes the DB and checks the OpenAI key is present
+# instead of unconditionally returning {"ok": True}.
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    checks: dict[str, str] = {}
+
+    # Database check
+    try:
+        with Session(engine) as session:
+            session.exec(select(User).limit(1)).first()
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+
+    # OpenAI key presence check (not a live API call — just env presence)
+    checks["openai_key"] = "ok" if os.getenv("OPENAI_API_KEY") else "missing"
+
+    # Gmail connectivity (non-fatal)
+    checks["gmail"] = "connected" if google_connected() else "not_connected"
+
+    ok = all(v in ("ok", "connected", "not_connected") for v in checks.values())
+    return {"ok": ok, "checks": checks}
+
 
 @app.post("/messages/{message_id}/ignore")
-def ignore_message(message_id: int) -> dict:
+def ignore_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
-
         message.status = MessageStatus.ignored
         message.updated_at = datetime.utcnow()
-
         session.add(message)
         session.commit()
         session.refresh(message)
+        log_action(session, message_id, "ignored", actor_name_for(current_user))
+        return {"ok": True, "message_id": message_id, "status": message.status}
 
-        log_action(
-            session,
-            message_id,
-            "ignored",
-            "Jakov",
-            metadata_json=None,
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
 
 @app.get("/messages/{message_id}/notes", response_model=list[InternalNoteRead])
-def list_message_notes(message_id: int) -> list[InternalNote]:
+def list_message_notes(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> list[InternalNote]:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
-
         notes = session.exec(
             select(InternalNote)
             .where(InternalNote.message_id == message_id)
             .order_by(InternalNote.created_at.desc())
         ).all()
-
         return notes
 
 
+@app.delete("/messages/{message_id}/delete-internal")
+def delete_internal_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+
+        for model in (ExtractedFields, Draft, InternalNote, AuditLog, QuoteProposal):
+            for row in session.exec(select(model).where(model.message_id == message_id)).all():
+                session.delete(row)
+
+        for doc in session.exec(select(Document).where(Document.message_id == message_id)).all():
+            if doc.storage_path and Path(doc.storage_path).exists():
+                Path(doc.storage_path).unlink()
+            session.delete(doc)
+
+        session.delete(message)
+        session.commit()
+
+        return {"ok": True, "message": "Internal message deleted", "message_id": message_id}
+
+
+@app.delete("/messages/{message_id}/delete-email")
+def delete_email_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        gmail_deleted = False
+
+        if message.source == MessageSource.gmail and message.gmail_message_id:
+            service = get_gmail_service()
+            service.users().messages().trash(userId="me", id=message.gmail_message_id).execute()
+            gmail_deleted = True
+
+        message.status = MessageStatus.archived
+        message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+
+        log_action(
+            session, message_id, "gmail_trashed", actor_name_for(current_user),
+            metadata_json=json.dumps({
+                "gmail_deleted": gmail_deleted,
+                "gmail_message_id": message.gmail_message_id,
+                "gmail_thread_id": message.gmail_thread_id,
+            }),
+        )
+
+        return {"ok": True, "message_id": message_id, "gmail_deleted": gmail_deleted, "status": message.status}
+
+
 @app.get("/messages/{message_id}/quote-proposal", response_model=QuoteProposalResponse)
-def get_quote_proposal(message_id: int):
+def get_quote_proposal(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> QuoteProposalResponse:
     with Session(engine) as session:
         message = session.get(Message, message_id)
         if not message:
@@ -2300,25 +2321,20 @@ def get_quote_proposal(message_id: int):
             return quote_proposal_to_response(proposal)
 
         return QuoteProposalResponse(
-            message_id=message_id,
-            title="Electrical Works Proposal",
-            currency="EUR",
-            client_name=message.sender_name,
-            project_name=message.subject,
-            site_address=None,
-            intro_text=None,
-            scope_items=[],
-            exclusions_text=None,
-            validity_days=15,
-            payment_terms=None,
-            discount_amount=0,
-            subtotal=0,
-            total_amount=0,
+            message_id=message_id, title="Electrical Works Proposal", currency="EUR",
+            client_name=message.sender_name, project_name=message.subject,
+            site_address=None, intro_text=None, scope_items=[],
+            exclusions_text=None, validity_days=15, payment_terms=None,
+            discount_amount=0, subtotal=0, total_amount=0,
         )
 
 
 @app.put("/messages/{message_id}/quote-proposal", response_model=QuoteProposalResponse)
-def save_quote_proposal(message_id: int, payload: QuoteProposalPayload):
+def save_quote_proposal(
+    message_id: int,
+    payload: QuoteProposalPayload,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+):
     with Session(engine) as session:
         message = session.get(Message, message_id)
         if not message:
@@ -2358,7 +2374,10 @@ def save_quote_proposal(message_id: int, payload: QuoteProposalPayload):
 
 
 @app.post("/messages/{message_id}/quote-proposal/autofill", response_model=QuoteProposalResponse)
-def autofill_quote_proposal(message_id: int):
+def autofill_quote_proposal(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+):
     with Session(engine) as session:
         message = session.get(Message, message_id)
         if not message:
@@ -2380,9 +2399,7 @@ def autofill_quote_proposal(message_id: int):
             brief = None
 
         payload = build_initial_quote_proposal_from_message(
-            message=message,
-            qualification=qualification,
-            brief=brief,
+            message=message, qualification=qualification, brief=brief,
         )
 
         proposal = session.exec(
@@ -2417,6 +2434,7 @@ def autofill_quote_proposal(message_id: int):
 
         return quote_proposal_to_response(proposal)
 
+
 @app.post("/auth/bootstrap", response_model=UserRead)
 def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
     with Session(engine, expire_on_commit=False) as session:
@@ -2438,7 +2456,10 @@ def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
 
 
 @app.get("/messages/{message_id}/quote-brief.pdf")
-def export_quote_brief_pdf(message_id: int):
+def export_quote_brief_pdf(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> StreamingResponse:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         pdf_bytes = build_quote_brief_pdf_bytes(session, message)
@@ -2447,75 +2468,59 @@ def export_quote_brief_pdf(message_id: int):
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        },
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+
 @app.get("/messages/{message_id}/quote-brief")
-def get_quote_brief(message_id: int) -> dict:
+def get_quote_brief(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+):
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         brief = build_electrical_quote_brief(session, message)
         return brief.model_dump()
-    
-    
-    
+
+
 @app.post("/messages/{message_id}/ready-for-site-visit")
-def mark_ready_for_site_visit(message_id: int) -> dict:
+def mark_ready_for_site_visit(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
-
         message.status = MessageStatus.ready_for_site_visit
         message.updated_at = datetime.utcnow()
-
         session.add(message)
         session.commit()
         session.refresh(message)
+        log_action(session, message_id, "marked_ready_for_site_visit", actor_name_for(current_user),
+                   metadata_json=json.dumps({"status": message.status.value}))
+        return {"ok": True, "message_id": message_id, "status": message.status}
 
-        log_action(
-            session,
-            message_id,
-            "marked_ready_for_site_visit",
-            "operator",
-            metadata_json=json.dumps({"status": message.status.value}),
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
 
 
 @app.post("/messages/{message_id}/ready-for-quote")
-def mark_ready_for_quote(message_id: int) -> dict:
+def mark_ready_for_quote(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
-
         message.status = MessageStatus.ready_for_quote
         message.updated_at = datetime.utcnow()
-
         session.add(message)
         session.commit()
         session.refresh(message)
+        log_action(session, message_id, "marked_ready_for_quote", actor_name_for(current_user),
+                   metadata_json=json.dumps({"status": message.status.value}))
+        return {"ok": True, "message_id": message_id, "status": message.status}
 
-        log_action(
-            session,
-            message_id,
-            "marked_ready_for_quote",
-            "operator",
-            metadata_json=json.dumps({"status": message.status.value}),
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
 
 @app.post("/auth/login", response_model=TokenResponse)
-def login(payload: LoginRequest) -> TokenResponse:
+@limiter.limit("5/minute")
+def login(request: Request, payload: LoginRequest) -> TokenResponse:
     with Session(engine, expire_on_commit=False) as session:
         user = get_user_by_email(session, payload.email)
         if not user or not verify_password(payload.password, user.hashed_password):
@@ -2534,101 +2539,85 @@ def login(payload: LoginRequest) -> TokenResponse:
             ),
         )
 
-
 @app.get("/settings", response_model=CompanySettingsRead)
-def get_settings() -> CompanySettingsRead:
+def get_settings(
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> CompanySettingsRead:
     with Session(engine, expire_on_commit=False) as session:
         settings = get_or_create_company_settings(session)
         return company_settings_to_read(settings)
 
 
 @app.put("/settings", response_model=CompanySettingsRead)
-def update_settings(payload: CompanySettingsUpdate) -> CompanySettingsRead:
+def update_settings(
+    payload: CompanySettingsUpdate,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> CompanySettingsRead:
     with Session(engine, expire_on_commit=False) as session:
         settings = get_or_create_company_settings(session)
-
         settings.company_name = payload.company_name.strip() or "Your Company"
         settings.preferred_reply_tone = payload.preferred_reply_tone
         settings.reply_signature = payload.reply_signature.strip() or "Best,\nYour Company"
         settings.ignore_senders_json = list_to_json(payload.ignore_senders)
         settings.quote_required_fields_json = list_to_json(payload.quote_required_fields)
         settings.updated_at = datetime.utcnow()
-
         session.add(settings)
         session.commit()
         session.refresh(settings)
-
         return company_settings_to_read(settings)
 
+
 @app.get("/messages/{message_id}/electrical-qualification")
-def get_electrical_qualification(message_id: int) -> dict:
+def get_electrical_qualification(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
-        print("ELECTRICAL QUALIFICATION ROUTE HIT", message_id)
         message = get_message_or_404(session, message_id)
         context = build_message_context(session, message)
         qualification = ai_qualify_electrical_lead(context)
-        print("ELECTRICAL QUALIFICATION RESULT", qualification)
         return qualification.model_dump()
-    
+
+
 @app.get("/auth/me", response_model=UserRead)
 def auth_me(current_user: User = Depends(get_current_user)) -> UserRead:
     return UserRead(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        role=current_user.role,
-        is_active=current_user.is_active,
+        id=current_user.id, email=current_user.email, full_name=current_user.full_name,
+        role=current_user.role, is_active=current_user.is_active,
     )
 
-@app.get("/messages/{message_id}/electrical-qualification")
-def get_electrical_qualification(message_id: int) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-        context = build_message_context(session, message)
-        qualification = ai_qualify_electrical_lead(context)
-        return qualification.model_dump()
 
 @app.get("/messages", response_model=list[MessageRead])
 def list_messages(current_user: User = Depends(get_current_user)) -> list[Message]:
     with Session(engine, expire_on_commit=False) as session:
-        rows = session.exec(select(Message).order_by(Message.created_at.desc())).all()
-        return rows
-
-
+        return session.exec(select(Message).order_by(Message.created_at.desc())).all()
 
 
 @app.post("/messages/{message_id}/notes", response_model=InternalNoteRead)
-def create_message_note(message_id: int, payload: InternalNoteCreate) -> InternalNote:
+def create_message_note(
+    message_id: int,
+    payload: InternalNoteCreate,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> InternalNote:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
 
-        note = InternalNote(
-            message_id=message_id,
-            author=payload.author.strip() or "Jakov",
-            note_text=payload.note_text.strip(),
-        )
+        author_name = (payload.author or "").strip() or actor_name_for(current_user)
+        note_text = payload.note_text.strip()
 
-        if not note.note_text:
+        if not note_text:
             raise HTTPException(status_code=400, detail="Note text cannot be empty")
 
+        note = InternalNote(message_id=message_id, author=author_name, note_text=note_text)
         session.add(note)
         session.commit()
         session.refresh(note)
 
-        log_action(
-            session,
-            message_id,
-            "internal_note_created",
-            payload.author.strip() or "Jakov",
-            metadata_json=json.dumps(
-                {
-                    "note_id": note.id,
-                    "preview": note.note_text[:120],
-                }
-            ),
-        )
+        log_action(session, message_id, "internal_note_created", author_name,
+                   metadata_json=json.dumps({"note_id": note.id, "preview": note.note_text[:120]}))
 
         return note
+
 
 @app.post("/messages/{message_id}/approve")
 def approve_message(
@@ -2637,60 +2626,108 @@ def approve_message(
 ) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
+
+        draft = session.exec(
+            select(Draft).where(Draft.message_id == message_id).order_by(Draft.created_at.desc())
+        ).first()
+
+        if not draft:
+            raise HTTPException(status_code=404, detail="Draft not found")
+
+        draft.approval_status = ApprovalStatus.approved
+        draft.approved_by = actor_name_for(current_user)
+        draft.updated_at = datetime.utcnow()
+
         message.status = MessageStatus.approved
         message.updated_at = datetime.utcnow()
+
+        session.add(draft)
         session.add(message)
         session.commit()
         session.refresh(message)
 
-        log_action(
-            session,
-            message_id,
-            "approved",
-            actor_name_for(current_user),
-            metadata_json=None,
-        )
+        log_action(session, message_id, "approved", actor_name_for(current_user))
 
         return {"ok": True, "message_id": message_id, "status": message.status}
 
+
 @app.post("/messages/{message_id}/unignore")
-def unignore_message(message_id: int) -> dict:
+def unignore_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
-
         message.status = MessageStatus.new
         message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+        log_action(session, message_id, "unignored", actor_name_for(current_user))
+        return {"ok": True, "message_id": message_id, "status": message.status}
 
+
+@app.post("/messages/{message_id}/archive")
+def archive_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        gmail_archived = False
+
+        if message.source == MessageSource.gmail and message.gmail_message_id:
+            service = get_gmail_service()
+            archive_gmail_message(service, message.gmail_message_id)
+            gmail_archived = True
+
+        message.status = MessageStatus.archived
+        message.updated_at = datetime.utcnow()
         session.add(message)
         session.commit()
         session.refresh(message)
 
-        log_action(
-            session,
-            message_id,
-            "unignored",
-            "Jakov",
-            metadata_json=None,
-        )
+        log_action(session, message_id, "archived", actor_name_for(current_user),
+                   metadata_json=json.dumps({
+                       "gmail_archived": gmail_archived,
+                       "gmail_message_id": message.gmail_message_id,
+                       "gmail_thread_id": message.gmail_thread_id,
+                   }))
 
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
+        return {"ok": True, "message_id": message_id, "status": message.status, "gmail_archived": gmail_archived}
+
+
+@app.post("/messages/{message_id}/unarchive")
+def unarchive_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        message = get_message_or_404(session, message_id)
+        message.status = MessageStatus.needs_review
+        message.updated_at = datetime.utcnow()
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+        log_action(session, message_id, "unarchived", actor_name_for(current_user))
+        return {"ok": True, "message_id": message_id, "status": message.status}
+
 
 @app.post("/messages/{message_id}/send-gmail")
-def send_message_via_gmail(message_id: int) -> dict:
+def send_message_via_gmail(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     service = get_gmail_service()
 
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
 
         if message.status not in (MessageStatus.approved, MessageStatus.waiting_for_info):
-         raise HTTPException(
-        status_code=400,
-        detail="Only approved or waiting-for-info messages can be sent",
-    )
+            raise HTTPException(
+                status_code=400,
+                detail="Only approved or waiting-for-info messages can be sent",
+            )
 
         draft = get_latest_draft_for_message(session, message_id)
         draft_text = (
@@ -2700,10 +2737,7 @@ def send_message_via_gmail(message_id: int) -> dict:
         ).strip()
 
         if not draft_text:
-            raise HTTPException(
-                status_code=400,
-                detail="No saved draft found for this message",
-            )
+            raise HTTPException(status_code=400, detail="No saved draft found for this message")
 
         thread_id = None
         in_reply_to = None
@@ -2748,222 +2782,18 @@ def send_message_via_gmail(message_id: int) -> dict:
             references=references,
         )
 
-        sent = (
-            service.users().messages().send(userId="me", body=gmail_payload).execute()
-        )
+        sent = service.users().messages().send(userId="me", body=gmail_payload).execute()
 
         message.status = MessageStatus.sent
         message.updated_at = datetime.utcnow()
         session.add(message)
         session.commit()
 
-        log_action(
-            session,
-            message_id,
-            "sent_via_gmail",
-            "gmail",
-            metadata_json=json.dumps(
-                {
-                    "gmail_sent_message_id": sent.get("id"),
-                    "thread_id": sent.get("threadId"),
-                }
-            ),
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "gmail_sent_message_id": sent.get("id"),
-            "thread_id": sent.get("threadId"),
-            "status": message.status,
-        }
-
-
-@app.post("/messages/{message_id}/archive")
-def archive_message(message_id: int) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-
-        gmail_archived = False
-
-        if message.source == MessageSource.gmail and message.gmail_message_id:
-            service = get_gmail_service()
-            archive_gmail_message(service, message.gmail_message_id)
-            gmail_archived = True
-
-        message.status = MessageStatus.archived
-        message.updated_at = datetime.utcnow()
-
-        session.add(message)
-        session.commit()
-        session.refresh(message)
-
-        log_action(
-            session,
-            message_id,
-            "archived",
-            "Jakov",
-            metadata_json=json.dumps(
-                {
-                    "gmail_archived": gmail_archived,
-                    "gmail_message_id": message.gmail_message_id,
-                    "gmail_thread_id": message.gmail_thread_id,
-                }
-            ),
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-            "gmail_archived": gmail_archived,
-        }
-
-
-@app.post("/messages/{message_id}/archive")
-def archive_message(message_id: int) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-
-        message.status = MessageStatus.archived
-        message.updated_at = datetime.utcnow()
-
-        session.add(message)
-        session.commit()
-        session.refresh(message)
-
-        log_action(
-            session,
-            message_id,
-            "archived",
-            "Jakov",
-            metadata_json=None,
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
-
-
-@app.post("/messages/{message_id}/unarchive")
-def unarchive_message(message_id: int) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-
-        message.status = MessageStatus.needs_review
-        message.updated_at = datetime.utcnow()
-
-        session.add(message)
-        session.commit()
-        session.refresh(message)
-
-        log_action(
-            session,
-            message_id,
-            "unarchived",
-            "Jakov",
-            metadata_json=None,
-        )
-
-        return {
-            "ok": True,
-            "message_id": message_id,
-            "status": message.status,
-        }
-
-
-@app.post("/messages/{message_id}/send-gmail")
-def send_message_via_gmail(message_id: int) -> dict:
-    service = get_gmail_service()
-
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-
-        if message.status != MessageStatus.approved:
-            raise HTTPException(
-                status_code=400, detail="Only approved messages can be sent"
-            )
-
-        draft = get_latest_draft_for_message(session, message_id)
-        if not draft:
-            raise HTTPException(
-                status_code=400, detail="No draft found for this message"
-            )
-
-        draft_text = (draft.approved_text or draft.draft_text or "").strip()
-        if not draft_text:
-            raise HTTPException(status_code=400, detail="Draft text is empty")
-
-        gmail_meta = get_gmail_import_metadata(session, message_id)
-
-        thread_id = None
-        in_reply_to = None
-        references = None
-        subject = message.subject or "(No subject)"
-
-        if gmail_meta and gmail_meta.get("gmail_message_id"):
-            gmail_message_id = gmail_meta["gmail_message_id"]
-
-            original = (
-                service.users()
-                .messages()
-                .get(
-                    userId="me",
-                    id=gmail_message_id,
-                    format="metadata",
-                    metadataHeaders=["Message-ID", "References", "Subject"],
-                )
-                .execute()
-            )
-
-            headers = (original.get("payload") or {}).get("headers", []) or []
-            original_message_id = extract_header(headers, "Message-ID")
-            original_references = extract_header(headers, "References")
-            original_subject = extract_header(headers, "Subject")
-
-            thread_id = gmail_meta.get("thread_id") or original.get("threadId")
-            in_reply_to = original_message_id
-            references = (
-                f"{original_references} {original_message_id}".strip()
-                if original_references and original_message_id
-                else original_message_id
-            )
-
-            if original_subject:
-                subject = original_subject
-
-        gmail_payload = build_gmail_raw_message(
-            to_email=message.sender_email,
-            subject=subject,
-            body_text=draft_text,
-            thread_id=thread_id,
-            in_reply_to=in_reply_to,
-            references=references,
-        )
-
-        sent = (
-            service.users().messages().send(userId="me", body=gmail_payload).execute()
-        )
-
-        message.status = MessageStatus.sent
-        message.updated_at = datetime.utcnow()
-        session.add(message)
-        session.commit()
-
-        log_action(
-            session,
-            message_id,
-            "sent_via_gmail",
-            "gmail",
-            metadata_json=json.dumps(
-                {
-                    "gmail_sent_message_id": sent.get("id"),
-                    "thread_id": sent.get("threadId"),
-                }
-            ),
-        )
+        log_action(session, message_id, "sent_via_gmail", actor_name_for(current_user),
+                   metadata_json=json.dumps({
+                       "gmail_sent_message_id": sent.get("id"),
+                       "thread_id": sent.get("threadId"),
+                   }))
 
         return {
             "ok": True,
@@ -2975,52 +2805,52 @@ def send_message_via_gmail(message_id: int) -> dict:
 
 
 @app.delete("/messages/clear-local")
-def clear_local_messages() -> dict:
+def clear_local_messages(
+    current_user: User = Depends(require_roles(UserRole.admin)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         docs = session.exec(select(Document)).all()
-        extracted_rows = session.exec(select(ExtractedFields)).all()
-        drafts = session.exec(select(Draft)).all()
-        logs = session.exec(select(AuditLog)).all()
-        messages = session.exec(select(Message)).all()
-
-        deleted_counts = {
-            "documents": 0,
-            "extracted_fields": 0,
-            "drafts": 0,
-            "audit_logs": 0,
-            "messages": 0,
+        deleted_counts: dict[str, int] = {
+            "documents": 0, "document_files": 0, "extracted_fields": 0,
+            "drafts": 0, "audit_logs": 0, "internal_notes": 0,
+            "quote_proposals": 0, "messages": 0,
         }
 
         for row in docs:
+            if row.storage_path and Path(row.storage_path).exists():
+                Path(row.storage_path).unlink()
+                deleted_counts["document_files"] += 1
             session.delete(row)
             deleted_counts["documents"] += 1
 
-        for row in extracted_rows:
-            session.delete(row)
-            deleted_counts["extracted_fields"] += 1
-
-        for row in drafts:
-            session.delete(row)
-            deleted_counts["drafts"] += 1
-
-        for row in logs:
-            session.delete(row)
-            deleted_counts["audit_logs"] += 1
-
-        for row in messages:
-            session.delete(row)
-            deleted_counts["messages"] += 1
+        for model, key in [
+            (ExtractedFields, "extracted_fields"),
+            (Draft, "drafts"),
+            (AuditLog, "audit_logs"),
+            (InternalNote, "internal_notes"),
+            (QuoteProposal, "quote_proposals"),
+            (Message, "messages"),
+        ]:
+            for row in session.exec(select(model)).all():
+                session.delete(row)
+                deleted_counts[key] += 1
 
         session.commit()
-
-        return {
-            "ok": True,
-            "deleted": deleted_counts,
-        }
+        return {"ok": True, "deleted": deleted_counts}
 
 
+# FIX 7 + FIX 1: gmail/sync is rate-limited to 10 calls/minute per IP.
+# auto_process AI work runs in a BackgroundTask so the endpoint returns
+# promptly with import counts instead of blocking on sequential OpenAI calls.
 @app.post("/gmail/sync")
-def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
+@limiter.limit("10/minute")
+def gmail_sync(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    max_results: int = 20,
+    auto_process: bool = False,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     service = get_gmail_service()
     connected_gmail_address = get_connected_gmail_address(service)
 
@@ -3030,25 +2860,21 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
         .list(
             userId="me",
             labelIds=["INBOX"],
-            q='in:inbox -category:promotions -category:social -category:forums -from:noreply -from:no-reply -from:mailer-daemon',
+            q="in:inbox -category:promotions -category:social -category:forums -from:noreply -from:no-reply -from:mailer-daemon",
             maxResults=max_results,
         )
         .execute()
     )
 
     message_refs = gmail_list.get("messages", []) or []
-    print(f"[GMAIL SYNC DEBUG] fetched_refs={len(message_refs)}")
 
     imported_count = 0
-    processed_count = 0
-    duplicate_count = 0
     thread_reply_updated_count = 0
     own_thread_skipped_count = 0
     auto_ignored_count = 0
     skipped_count = 0
+    queued_process_count = 0
     duplicate_count = 0
-    thread_reply_updated_count = 0
-    own_thread_skipped_count = 0
     imported_attachment_count = 0
     imported_ids: list[int] = []
 
@@ -3063,8 +2889,6 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
             if gmail_message_id in existing_gmail_ids:
                 duplicate_count += 1
-                thread_reply_updated_count += 1
-                own_thread_skipped_count += 1
                 skipped_count += 1
                 continue
 
@@ -3088,35 +2912,23 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
 
             if not sender_email_normalized:
                 skipped_count += 1
-                print(
-    f"[GMAIL SYNC DEBUG] gmail_message_id={gmail_message_id} "
-    f"thread_id={gmail_thread_id} sender={sender_email_normalized} "
-    f"is_from_me={is_from_me} subject={subject}"
-)
                 continue
-            print(
-    f"[GMAIL SYNC DEBUG] gmail_message_id={gmail_message_id} "
-    f"thread_id={gmail_thread_id} sender={sender_email_normalized} "
-    f"is_from_me={is_from_me} subject={subject}"
-)
+
             body_text = extract_plain_text_from_payload(payload).strip()
             snippet = gmail_message.get("snippet", "") or ""
 
             if not body_text or len(body_text) > 4000 or body_text.count("http") > 5:
                 body_text = snippet
 
-            # Existing local message in same Gmail thread
+            # FIX 5: Truncate before storing.
+            body_text = truncate_body(body_text)
+
             existing_thread_message = None
             if gmail_thread_id:
-                existing_thread_message = get_local_message_by_gmail_thread(
-                    session, gmail_thread_id
-                )
+                existing_thread_message = get_local_message_by_gmail_thread(session, gmail_thread_id)
 
-            # External reply in existing thread -> reopen workflow
             if existing_thread_message and not is_from_me:
-                was_waiting_for_info = (
-                    existing_thread_message.status == MessageStatus.waiting_for_info
-                )
+                was_waiting_for_info = existing_thread_message.status == MessageStatus.waiting_for_info
 
                 append_customer_reply_to_message(
                     session,
@@ -3128,8 +2940,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
                 )
 
                 reply_attachment_count = import_gmail_attachments_for_message(
-                    service,
-                    session,
+                    service, session,
                     gmail_message=gmail_message,
                     local_message_id=existing_thread_message.id,
                 )
@@ -3141,56 +2952,35 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
                     session.commit()
                     session.refresh(existing_thread_message)
 
-                log_action(
-                    session,
-                    existing_thread_message.id,
-                    "customer_reply_synced",
-                    "gmail_sync",
-                    metadata_json=json.dumps(
-                        {
-                            "gmail_message_id": gmail_message_id,
-                            "thread_id": gmail_thread_id,
-                            "reopened_for_review": was_waiting_for_info,
-                            "reply_attachment_count": reply_attachment_count,
-                        }
-                    ),
-                )
+                log_action(session, existing_thread_message.id, "customer_reply_synced", "gmail_sync",
+                           metadata_json=json.dumps({
+                               "gmail_message_id": gmail_message_id,
+                               "thread_id": gmail_thread_id,
+                               "reopened_for_review": was_waiting_for_info,
+                               "reply_attachment_count": reply_attachment_count,
+                           }))
 
                 existing_gmail_ids.add(gmail_message_id)
                 thread_reply_updated_count += 1
                 continue
 
-            # Our own sent message in existing thread -> skip
             if existing_thread_message and is_from_me:
-                log_action(
-                    session,
-                    existing_thread_message.id,
-                    "own_thread_message_skipped",
-                    "gmail_sync",
-                    metadata_json=json.dumps(
-                        {
-                            "gmail_message_id": gmail_message_id,
-                            "thread_id": gmail_thread_id,
-                        }
-                    ),
-                )
-
+                log_action(session, existing_thread_message.id, "own_thread_message_skipped", "gmail_sync",
+                           metadata_json=json.dumps({
+                               "gmail_message_id": gmail_message_id,
+                               "thread_id": gmail_thread_id,
+                           }))
                 existing_gmail_ids.add(gmail_message_id)
                 own_thread_skipped_count += 1
                 continue
 
-            # Brand new local message
             should_ignore, ignore_reason = should_auto_ignore_message(
                 subject=subject,
                 sender_email=sender_email,
                 body_text=body_text,
                 custom_ignore_senders=settings_read.ignore_senders,
             )
-            score = triage_score(
-                subject=subject,
-                sender_email=sender_email,
-                body_text=body_text,
-            )
+            score = triage_score(subject=subject, sender_email=sender_email, body_text=body_text)
 
             message = Message(
                 subject=subject,
@@ -3209,10 +2999,7 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
             session.refresh(message)
 
             attachment_count = import_gmail_attachments_for_message(
-                service,
-                session,
-                gmail_message=gmail_message,
-                local_message_id=message.id,
+                service, session, gmail_message=gmail_message, local_message_id=message.id,
             )
 
             message.has_attachments = attachment_count > 0
@@ -3221,67 +3008,68 @@ def gmail_sync(max_results: int = 20, auto_process: bool = False) -> dict:
             session.commit()
             session.refresh(message)
 
-            log_action(
-                session,
-                message.id,
-                "gmail_imported",
-                "gmail_sync",
-                metadata_json=json.dumps(
-                    {
-                        "gmail_message_id": gmail_message_id,
-                        "thread_id": gmail_thread_id,
-                        "attachment_count": attachment_count,
-                        "triage_score": score,
-                        "auto_ignored": should_ignore,
-                    }
-                ),
-            )
+            log_action(session, message.id, "gmail_imported", "gmail_sync",
+                       metadata_json=json.dumps({
+                           "gmail_message_id": gmail_message_id,
+                           "thread_id": gmail_thread_id,
+                           "attachment_count": attachment_count,
+                           "triage_score": score,
+                           "auto_ignored": should_ignore,
+                       }))
 
             if should_ignore:
-                log_action(
-                    session,
-                    message.id,
-                    "auto_ignored",
-                    "system",
-                    metadata_json=json.dumps({"reason": ignore_reason}),
-                )
+                log_action(session, message.id, "auto_ignored", "system",
+                           metadata_json=json.dumps({"reason": ignore_reason}))
 
             imported_attachment_count += attachment_count
             imported_count += 1
-            auto_ignored_count += 1
+
+            if should_ignore:
+                auto_ignored_count += 1
+
             imported_ids.append(message.id)
             existing_gmail_ids.add(gmail_message_id)
 
+            # FIX 7: Queue AI processing as a background task instead of
+            # blocking the request on sequential OpenAI calls per message.
             if auto_process and message.status != MessageStatus.ignored:
-                try:
-                    run_ai_workflow_for_message(session, message.id)
-                    processed_count += 1
-                except Exception as exc:
-                    log_action(
-                        session,
-                        message.id,
-                        "auto_process_failed",
-                        "system",
-                        metadata_json=json.dumps({"error": str(exc)}),
-                    )
+                background_tasks.add_task(_bg_run_ai_workflow, message.id)
+                queued_process_count += 1
 
+    # Note: when auto_process=True, processed_count is no longer returned
+    # because processing happens asynchronously. The frontend should refresh
+    # the message list after a short delay to see updated statuses.
     return {
-    "imported_count": imported_count,
-    "processed_count": processed_count,
-    "imported_attachment_count": imported_attachment_count,
-    "thread_reply_updated_count": thread_reply_updated_count,
-    "own_thread_skipped_count": own_thread_skipped_count,
-    "duplicate_count": duplicate_count,
-    "skipped_count": skipped_count,
-    "imported_message_ids": imported_ids,
-    "auto_ignored_count": auto_ignored_count,
-}
+        "imported_count": imported_count,
+        "imported_attachment_count": imported_attachment_count,
+        "thread_reply_updated_count": thread_reply_updated_count,
+        "own_thread_skipped_count": own_thread_skipped_count,
+        "duplicate_count": duplicate_count,
+        "skipped_count": skipped_count,
+        "imported_message_ids": imported_ids,
+        "auto_ignored_count": auto_ignored_count,
+        "auto_process_queued": auto_process,
+        "processed_count": queued_process_count,
+    }
+
+
+# FIX 1: AI process endpoint rate-limited to 20 calls/minute per IP.
+@app.post("/messages/{message_id}/process")
+@limiter.limit("20/minute")
+def process_message(
+    request: Request,
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    with Session(engine, expire_on_commit=False) as session:
+        return run_ai_workflow_for_message(session, message_id)
 
 
 @app.get("/auth/google/start")
-def google_auth_start() -> RedirectResponse:
+def google_auth_start(
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> RedirectResponse:
     client_config = get_google_client_config()
-
     state = secrets.token_urlsafe(24)
     code_verifier = secrets.token_urlsafe(96)[:128]
 
@@ -3295,13 +3083,9 @@ def google_auth_start() -> RedirectResponse:
     )
 
     oauth_pending[state] = code_verifier
-
     authorization_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
+        access_type="offline", include_granted_scopes="true", prompt="consent",
     )
-
     return RedirectResponse(url=authorization_url)
 
 
@@ -3315,16 +3099,14 @@ def google_auth_callback(
         raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
 
     if not code or not state:
-        raise HTTPException(
-            status_code=400, detail="Missing code or state in Google callback"
-        )
+        raise HTTPException(status_code=400, detail="Missing code or state in Google callback")
 
     if state not in oauth_pending:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     code_verifier = oauth_pending.pop(state)
-
     client_config = get_google_client_config()
+
     flow = Flow.from_client_config(
         client_config,
         scopes=GOOGLE_SCOPES,
@@ -3335,8 +3117,7 @@ def google_auth_callback(
     )
 
     flow.fetch_token(code=code)
-    credentials = flow.credentials
-    save_google_credentials(credentials)
+    save_google_credentials(flow.credentials)
 
     return HTMLResponse("""
         <html>
@@ -3345,16 +3126,20 @@ def google_auth_callback(
             <p>You can close this tab and return to the dashboard.</p>
           </body>
         </html>
-        """)
+    """)
 
 
 @app.get("/auth/google/status")
-def google_auth_status() -> dict:
+def google_auth_status(
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     return {"connected": google_connected()}
 
 
 @app.post("/auth/google/disconnect")
-def google_auth_disconnect() -> dict:
+def google_auth_disconnect(
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     token_file = Path(GOOGLE_TOKEN_PATH)
     if token_file.exists():
         token_file.unlink()
@@ -3362,88 +3147,73 @@ def google_auth_disconnect() -> dict:
 
 
 @app.get("/messages/{message_id}/documents")
-def list_message_documents(message_id: int) -> dict:
+def list_message_documents(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
-
         docs = session.exec(
-            select(Document)
-            .where(Document.message_id == message_id)
-            .order_by(Document.created_at.desc())
+            select(Document).where(Document.message_id == message_id).order_by(Document.created_at.desc())
         ).all()
-
         return {
             "message_id": message_id,
             "documents": [
-                {
-                    "id": doc.id,
-                    "filename": doc.filename,
-                    "file_type": doc.file_type,
-                    "storage_path": doc.storage_path,
-                    "created_at": doc.created_at,
-                }
-                for doc in docs
+                {"id": d.id, "filename": d.filename, "file_type": d.file_type,
+                 "storage_path": d.storage_path, "created_at": d.created_at}
+                for d in docs
             ],
         }
 
 
 @app.get("/messages/{message_id}/audit-logs")
-def get_message_audit_logs(message_id: int) -> dict:
+def get_message_audit_logs(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
-
         logs = session.exec(
-            select(AuditLog)
-            .where(AuditLog.message_id == message_id)
-            .order_by(AuditLog.created_at.desc())
+            select(AuditLog).where(AuditLog.message_id == message_id).order_by(AuditLog.created_at.desc())
         ).all()
-
         return {
             "message_id": message_id,
             "audit_logs": [
-                {
-                    "id": log.id,
-                    "action": log.action,
-                    "actor": log.actor,
-                    "metadata_json": log.metadata_json,
-                    "created_at": log.created_at,
-                }
-                for log in logs
+                {"id": l.id, "action": l.action, "actor": l.actor,
+                 "metadata_json": l.metadata_json, "created_at": l.created_at}
+                for l in logs
             ],
         }
 
 
 @app.post("/messages/{message_id}/draft-missing-info")
-def generate_missing_info_draft(message_id: int) -> dict:
+def generate_missing_info_draft(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
+
         context = build_message_context(session, message)
         settings = get_or_create_company_settings(session)
         settings_read = company_settings_to_read(settings)
         style_context = build_company_style_context(settings_read)
         context = context + "\n\nCOMPANY SETTINGS:\n" + style_context
+
         extracted = ai_extract_fields(message.category, context)
-    if is_quote_category(message.category):
-        extracted_data = extracted.model_dump()
-        merged_missing = merge_missing_information(
-        extracted_data,
-        settings_read.quote_required_fields,
-    )
-    if hasattr(extracted, "missing_information"):
+
+        merged_missing: list[str] = extracted.missing_information or []
+
+        if is_quote_category(message.category):
+            extracted_data = extracted.model_dump()
+            merged_missing = merge_missing_information(extracted_data, settings_read.quote_required_fields)
+
         extracted.missing_information = merged_missing
-        draft_output = ai_draft_missing_info(
-            message.category,
-            message.sender_name,
-            extracted,
-            context,
-        )
 
-        draft = Draft(
-            message_id=message_id,
-            draft_text=draft_output.reply_text,
-        )
+        draft_output = ai_draft_missing_info(message.category, message.sender_name, extracted, context)
 
+        draft = Draft(message_id=message_id, draft_text=draft_output.reply_text)
         message.status = MessageStatus.waiting_for_info
         message.updated_at = datetime.utcnow()
 
@@ -3453,19 +3223,12 @@ def generate_missing_info_draft(message_id: int) -> dict:
         session.refresh(draft)
         session.refresh(message)
 
-        log_action(
-            session,
-            message_id,
-            "missing_info_draft_created",
-            "ai",
-            metadata_json=json.dumps(
-                {
-                    "missing_information": extracted.missing_information,
-                    "reason": "missing_information",
-                    "new_status": "waiting_for_info",
-                }
-            ),
-        )
+        log_action(session, message_id, "missing_info_draft_created", "ai",
+                   metadata_json=json.dumps({
+                       "missing_information": extracted.missing_information,
+                       "reason": "missing_information",
+                       "new_status": "waiting_for_info",
+                   }))
 
         return {
             "message_id": message_id,
@@ -3477,13 +3240,17 @@ def generate_missing_info_draft(message_id: int) -> dict:
 
 
 @app.post("/messages", response_model=MessageRead)
-def create_message(payload: MessageCreate) -> Message:
+def create_message(
+    payload: MessageCreate,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> Message:
     with Session(engine, expire_on_commit=False) as session:
         message = Message(
             subject=payload.subject,
             sender_email=payload.sender_email,
             sender_name=payload.sender_name,
-            body_text=payload.body_text,
+            # FIX 5: Truncate body even on manual creation for consistency.
+            body_text=truncate_body(payload.body_text),
             source=MessageSource.manual,
             gmail_message_id=None,
             gmail_thread_id=None,
@@ -3497,53 +3264,42 @@ def create_message(payload: MessageCreate) -> Message:
         return message
 
 
-@app.get("/messages", response_model=list[MessageRead])
-def list_messages() -> list[Message]:
-    with Session(engine, expire_on_commit=False) as session:
-        rows = session.exec(select(Message).order_by(Message.created_at.desc())).all()
-        return rows
-
-
 @app.get("/messages/{message_id}", response_model=MessageRead)
-def get_message(message_id: int) -> Message:
+def get_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> Message:
     with Session(engine, expire_on_commit=False) as session:
         return get_message_or_404(session, message_id)
 
 
 @app.get("/messages/{message_id}/latest-extraction")
-def get_latest_extraction(message_id: int) -> dict:
+def get_latest_extraction(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
 
         row = session.exec(
-            select(ExtractedFields)
-            .where(ExtractedFields.message_id == message_id)
-            .order_by(ExtractedFields.created_at.desc())
+            select(ExtractedFields).where(ExtractedFields.message_id == message_id).order_by(ExtractedFields.created_at.desc())
         ).first()
 
         audit = session.exec(
             select(AuditLog)
-            .where(
-                AuditLog.message_id == message_id,
-                AuditLog.action.in_(["processed", "classified"]),
-            )
+            .where(AuditLog.message_id == message_id, AuditLog.action.in_(["processed", "classified"]))
             .order_by(AuditLog.created_at.desc())
         ).first()
 
         classification_summary = None
         if audit and audit.metadata_json:
             try:
-                meta = json.loads(audit.metadata_json)
-                classification_summary = meta.get("classification_summary")
+                classification_summary = json.loads(audit.metadata_json).get("classification_summary")
             except Exception:
-                classification_summary = None
+                pass
 
         if not row:
-            return {
-                "message_id": message_id,
-                "extracted_fields": None,
-                "classification_summary": classification_summary,
-            }
+            return {"message_id": message_id, "extracted_fields": None, "classification_summary": classification_summary}
 
         return {
             "message_id": message_id,
@@ -3555,14 +3311,14 @@ def get_latest_extraction(message_id: int) -> dict:
 
 
 @app.get("/messages/{message_id}/latest-draft")
-def get_latest_draft(message_id: int) -> dict:
+def get_latest_draft(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
-
         draft = session.exec(
-            select(Draft)
-            .where(Draft.message_id == message_id)
-            .order_by(Draft.created_at.desc())
+            select(Draft).where(Draft.message_id == message_id).order_by(Draft.created_at.desc())
         ).first()
 
         if not draft:
@@ -3580,7 +3336,11 @@ def get_latest_draft(message_id: int) -> dict:
 
 
 @app.post("/messages/{message_id}/documents")
-def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
+def upload_document(
+    message_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
 
@@ -3589,41 +3349,33 @@ def upload_document(message_id: int, file: UploadFile = File(...)) -> dict:
         stored_name = f"{timestamp_prefix}_{safe_name}"
         stored_path = UPLOAD_DIR / stored_name
 
-        raw_bytes = file.file.read()
+        raw_bytes = file.file.read() 
         stored_path.write_bytes(raw_bytes)
-        extracted_text = extract_text_from_upload(safe_name, raw_bytes)
-        print(
-            f"[UPLOAD DEBUG] {safe_name} extracted_text_length = {len(extracted_text) if extracted_text else 0}"
-        )
+        extracted_text = extract_text_from_file_bytes(
+        safe_name,
+        file.content_type,
+        raw_bytes,
+)
 
         doc = Document(
-            message_id=message_id,
-            filename=safe_name,
-            file_type=file.content_type,
-            storage_path=str(stored_path),
-            extracted_text=extracted_text,
+            message_id=message_id, filename=safe_name, file_type=file.content_type,
+            storage_path=str(stored_path), extracted_text=extracted_text,
         )
         session.add(doc)
         session.commit()
         session.refresh(doc)
-        log_action(
-            session,
-            message_id,
-            "document_uploaded",
-            "system",
-            metadata_json=json.dumps(
-                {"filename": safe_name, "stored_path": str(stored_path)}
-            ),
-        )
-        return {
-            "document_id": doc.id,
-            "filename": doc.filename,
-            "stored_path": str(stored_path),
-        }
+
+        log_action(session, message_id, "document_uploaded", "system",
+                   metadata_json=json.dumps({"filename": safe_name, "stored_path": str(stored_path)}))
+
+        return {"document_id": doc.id, "filename": doc.filename, "stored_path": str(stored_path)}
 
 
 @app.post("/messages/{message_id}/classify")
-def run_classification(message_id: int) -> dict:
+def run_classification(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         context = build_message_context(session, message)
@@ -3636,61 +3388,44 @@ def run_classification(message_id: int) -> dict:
         session.add(message)
         session.commit()
 
-        log_action(
-            session,
-            message_id,
-            "classified",
-            "ai",
-            metadata_json=json.dumps(
-                {
-                    "category": result.category.value,
-                    "confidence": result.confidence,
-                    "classification_summary": result.summary,
-                }
-            ),
-        )
-        return {
-            "message_id": message_id,
-            "category": result.category,
-            "confidence": result.confidence,
-            "summary": result.summary,
-        }
+        log_action(session, message_id, "classified", "ai",
+                   metadata_json=json.dumps({
+                       "category": result.category.value,
+                       "confidence": result.confidence,
+                       "classification_summary": result.summary,
+                   }))
+
+        return {"message_id": message_id, "category": result.category, "confidence": result.confidence, "summary": result.summary}
 
 
 @app.post("/messages/{message_id}/extract")
-def run_extraction(message_id: int) -> dict:
+def run_extraction(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
         context = build_message_context(session, message)
-        print(f"[PROCESS DEBUG] message_id={message_id}")
-        print(f"[PROCESS DEBUG] context preview:\n{context[:2000]}")
         extracted = ai_extract_fields(message.category, context)
-        row = ExtractedFields(
-            message_id=message_id, json_data=extracted.model_dump_json()
-        )
+
+        row = ExtractedFields(message_id=message_id, json_data=extracted.model_dump_json())
         session.add(row)
         message.updated_at = datetime.utcnow()
         session.add(message)
         session.commit()
         session.refresh(row)
 
-        log_action(
-            session,
-            message_id,
-            "fields_extracted",
-            "ai",
-            metadata_json=extracted.model_dump_json(),
-        )
-        return {
-            "message_id": message_id,
-            "extracted_fields_id": row.id,
-            "json_data": json.loads(row.json_data),
-        }
+        log_action(session, message_id, "fields_extracted", "ai", metadata_json=extracted.model_dump_json())
+
+        return {"message_id": message_id, "extracted_fields_id": row.id, "json_data": json.loads(row.json_data)}
 
 
 @app.post("/messages/{message_id}/draft-reply")
-def generate_draft(message_id: int) -> dict:
+def generate_draft(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         message = ensure_message_classified(session, message)
@@ -3707,82 +3442,51 @@ def generate_draft(message_id: int) -> dict:
         session.refresh(draft)
 
         log_action(session, message_id, "draft_created", "ai")
-        return {
-            "message_id": message_id,
-            "draft_id": draft.id,
-            "draft_text": draft.draft_text,
-        }
 
-
-@app.post("/messages/{message_id}/process")
-def process_message(message_id: int) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        return run_ai_workflow_for_message(session, message_id)
+        return {"message_id": message_id, "draft_id": draft.id, "draft_text": draft.draft_text}
 
 
 @app.post("/messages/{message_id}/edit-draft")
-def edit_draft(message_id: int, payload: DraftEditRequest) -> dict:
+def edit_draft(
+    message_id: int,
+    payload: DraftEditRequest,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         get_message_or_404(session, message_id)
         draft = session.exec(
-            select(Draft)
-            .where(Draft.message_id == message_id)
-            .order_by(Draft.created_at.desc())
+            select(Draft).where(Draft.message_id == message_id).order_by(Draft.created_at.desc())
         ).first()
+
         if not draft:
             raise HTTPException(status_code=404, detail="Draft not found")
 
         draft.approved_text = payload.draft_text
         draft.approval_status = ApprovalStatus.edited
-        draft.approved_by = payload.editor_name
+        draft.approved_by = actor_name_for(current_user)
         draft.updated_at = datetime.utcnow()
         session.add(draft)
         session.commit()
-        log_action(session, message_id, "draft_edited", payload.editor_name)
-        return {
-            "message_id": message_id,
-            "draft_id": draft.id,
-            "approved_text": draft.approved_text,
-        }
 
+        log_action(session, message_id, "draft_edited", actor_name_for(current_user))
 
-@app.post("/messages/{message_id}/approve")
-def approve_message(message_id: int, payload: ApprovalRequest) -> dict:
-    with Session(engine, expire_on_commit=False) as session:
-        message = get_message_or_404(session, message_id)
-        draft = session.exec(
-            select(Draft)
-            .where(Draft.message_id == message_id)
-            .order_by(Draft.created_at.desc())
-        ).first()
-        if not draft:
-            raise HTTPException(status_code=404, detail="Draft not found")
-
-        draft.approval_status = ApprovalStatus.approved
-        draft.approved_by = payload.actor_name
-        draft.updated_at = datetime.utcnow()
-        message.status = MessageStatus.approved
-        message.updated_at = datetime.utcnow()
-        session.add(draft)
-        session.add(message)
-        session.commit()
-        log_action(session, message_id, "approved", payload.actor_name)
-        return {"message_id": message_id, "status": message.status}
+        return {"message_id": message_id, "draft_id": draft.id, "approved_text": draft.approved_text}
 
 
 @app.post("/messages/{message_id}/reject")
-def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
+def reject_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         draft = session.exec(
-            select(Draft)
-            .where(Draft.message_id == message_id)
-            .order_by(Draft.created_at.desc())
+            select(Draft).where(Draft.message_id == message_id).order_by(Draft.created_at.desc())
         ).first()
 
         if draft:
             draft.approval_status = ApprovalStatus.rejected
-            draft.approved_by = payload.actor_name
+            draft.approved_by = actor_name_for(current_user)
             draft.updated_at = datetime.utcnow()
             session.add(draft)
 
@@ -3790,20 +3494,23 @@ def reject_message(message_id: int, payload: ApprovalRequest) -> dict:
         message.updated_at = datetime.utcnow()
         session.add(message)
         session.commit()
-        log_action(session, message_id, "rejected", payload.actor_name)
+
+        log_action(session, message_id, "rejected", actor_name_for(current_user))
+
         return {"message_id": message_id, "status": message.status}
 
 
 @app.get("/messages/{message_id}/debug-context")
-def debug_message_context(message_id: int) -> dict:
+def debug_message_context(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
         context = build_message_context(session, message)
 
         docs = session.exec(
-            select(Document)
-            .where(Document.message_id == message_id)
-            .order_by(Document.created_at.desc())
+            select(Document).where(Document.message_id == message_id).order_by(Document.created_at.desc())
         ).all()
 
         return {
@@ -3811,12 +3518,9 @@ def debug_message_context(message_id: int) -> dict:
             "document_count": len(docs),
             "documents": [
                 {
-                    "id": doc.id,
-                    "filename": doc.filename,
+                    "id": doc.id, "filename": doc.filename,
                     "has_extracted_text": bool(doc.extracted_text),
-                    "extracted_text_length": (
-                        len(doc.extracted_text) if doc.extracted_text else 0
-                    ),
+                    "extracted_text_length": len(doc.extracted_text) if doc.extracted_text else 0,
                 }
                 for doc in docs
             ],
@@ -3825,23 +3529,21 @@ def debug_message_context(message_id: int) -> dict:
 
 
 @app.post("/messages/{message_id}/send")
-def send_message(message_id: int, payload: ApprovalRequest) -> dict:
+def send_message(
+    message_id: int,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
     with Session(engine, expire_on_commit=False) as session:
         message = get_message_or_404(session, message_id)
+
         if message.status != MessageStatus.approved:
-            raise HTTPException(
-                status_code=400,
-                detail="Message must be approved before sending",
-            )
+            raise HTTPException(status_code=400, detail="Message must be approved before sending")
 
         message.status = MessageStatus.sent
         message.updated_at = datetime.utcnow()
         session.add(message)
         session.commit()
-        log_action(session, message_id, "sent", payload.actor_name)
 
-        return {
-            "message_id": message_id,
-            "status": message.status,
-            "note": "Stub send endpoint succeeded",
-        }
+        log_action(session, message_id, "sent", actor_name_for(current_user))
+
+        return {"message_id": message_id, "status": message.status, "note": "Stub send endpoint succeeded"}

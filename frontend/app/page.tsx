@@ -584,6 +584,79 @@ export default function Page() {
   const ignoreSelectedMessage = () => action("ignore", async () => { const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/ignore`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); await fetchMessageDetail(selectedMessage!.id); setToast({ type: "success", message: "Ignored." }); });
   const unignoreSelectedMessage = () => action("unignore", async () => { const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/unignore`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); await fetchMessageDetail(selectedMessage!.id); setToast({ type: "success", message: "Restored to inbox." }); });
   const archiveSelectedMessage = () => action("archive", async () => { const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/archive`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setQuoteProposal(null); await fetchMessages(); setToast({ type: "success", message: d.gmail_archived ? "Archived locally and in Gmail." : "Archived." }); });
+  const deleteSelectedInternalMessage = () =>
+  action("delete-internal", async () => {
+    if (!selectedMessage) return;
+
+    const confirmed = window.confirm(
+      "Delete this message from the internal app only? This will not delete it from Gmail."
+    );
+    if (!confirmed) return;
+
+    const r = await authFetch(
+      `${API_BASE}/messages/${selectedMessage.id}/delete-internal`,
+      { method: "DELETE" }
+    );
+    const d = await r.json();
+
+    if (!r.ok) throw new Error(d.detail || "Failed to delete internal message");
+
+    setSelectedId(null);
+    setSelectedMessage(null);
+    setProcessedData(null);
+    setEditedDraft("");
+    setDocuments([]);
+    setAuditLogs([]);
+    setNotes([]);
+    setNewNote("");
+    setElectricalQualification(null);
+    setQuoteBrief(null);
+    setQuoteProposal(null);
+
+    await fetchMessages();
+
+    setToast({
+      type: "success",
+      message: "Internal message deleted.",
+    });
+  });
+
+const deleteSelectedEmailMessage = () =>
+  action("delete-email", async () => {
+    if (!selectedMessage) return;
+
+    const confirmed = window.confirm(
+      "Delete this email from Gmail? It will be moved to Gmail Trash and removed from the app."
+    );
+    if (!confirmed) return;
+
+    const r = await authFetch(
+      `${API_BASE}/messages/${selectedMessage.id}/delete-email`,
+      { method: "DELETE" }
+    );
+    const d = await r.json();
+
+    if (!r.ok) throw new Error(d.detail || "Failed to delete email");
+
+    setSelectedId(null);
+    setSelectedMessage(null);
+    setProcessedData(null);
+    setEditedDraft("");
+    setDocuments([]);
+    setAuditLogs([]);
+    setNotes([]);
+    setNewNote("");
+    setElectricalQualification(null);
+    setQuoteBrief(null);
+    setQuoteProposal(null);
+
+    await fetchMessages();
+
+    setToast({
+      type: "success",
+      message: "Email moved to Gmail Trash and removed from the app.",
+    });
+  });
   const unarchiveSelectedMessage = () => action("unarchive", async () => { const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/unarchive`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); await fetchMessageDetail(selectedMessage!.id); setToast({ type: "success", message: "Unarchived." }); });
   const syncGmailInbox = (autoProcess = false) => action(autoProcess ? "gmail-ai" : "gmail", async () => { const r = await authFetch(`${API_BASE}/gmail/sync?max_results=10&auto_process=${autoProcess}`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); setToast({ type: "success", message: autoProcess ? `Imported ${d.imported_count}, processed ${d.processed_count}.` : `Imported ${d.imported_count}.` }); });
   const clearLocalInbox = () => { if (!window.confirm("Clear all local messages, drafts, and audit logs?")) return; action("clear", async () => { const r = await authFetch(`${API_BASE}/messages/clear-local`, { method: "DELETE" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); setMessages([]); setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setElectricalQualification(null); setToast({ type: "success", message: "Inbox cleared." }); }); };
