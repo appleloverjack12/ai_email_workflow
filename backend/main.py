@@ -23,7 +23,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from openai import OpenAI
+from sqlalchemy import Column, JSON
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, Field as PydanticField
 from pypdf import PdfReader
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import io
@@ -272,6 +275,63 @@ class Document(SQLModel, table=True):
     storage_path: Optional[str] = None
     extracted_text: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class QuoteLineItem(BaseModel):
+    name: str
+    description: Optional[str] = None
+    quantity: float = 1
+    unit: str = "pcs"
+    unit_price: float = 0
+    total: Optional[float] = None
+
+
+class QuoteProposalPayload(BaseModel):
+    title: str = "Electrical Works Proposal"
+    currency: str = "EUR"
+    client_name: Optional[str] = None
+    project_name: Optional[str] = None
+    site_address: Optional[str] = None
+    intro_text: Optional[str] = None
+    scope_items: list[QuoteLineItem] = PydanticField(default_factory=list)
+    exclusions_text: Optional[str] = None
+    validity_days: int = 15
+    payment_terms: Optional[str] = None
+    discount_amount: float = 0
+
+
+class QuoteProposalResponse(QuoteProposalPayload):
+    message_id: int
+    subtotal: float
+    total_amount: float
+
+
+class QuoteProposal(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="message.id", index=True, unique=True)
+
+    title: str = "Electrical Works Proposal"
+    currency: str = "EUR"
+    client_name: Optional[str] = None
+    project_name: Optional[str] = None
+    site_address: Optional[str] = None
+    intro_text: Optional[str] = None
+
+    scope_items_json: list[dict] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+
+    exclusions_text: Optional[str] = None
+    validity_days: int = 15
+    payment_terms: Optional[str] = None
+
+    subtotal: float = 0
+    discount_amount: float = 0
+    total_amount: float = 0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 class UserRole(str, Enum):
     admin = "admin"
@@ -586,6 +646,102 @@ def safe_text(value: object) -> str:
     text = str(value).strip()
     return text if text else "—"
 
+
+def normalize_quote_items(items: list[QuoteLineItem]) -> tuple[list[dict], float]:
+    normalized: list[dict] = []
+    subtotal = 0.0
+
+    for item in items:
+        quantity = float(item.quantity or 0)
+        unit_price = float(item.unit_price or 0)
+        total = round(quantity * unit_price, 2)
+
+        normalized_item = {
+            "name": item.name,
+            "description": item.description,
+            "quantity": quantity,
+            "unit": item.unit,
+            "unit_price": unit_price,
+            "total": total,
+        }
+        normalized.append(normalized_item)
+        subtotal += total
+
+    return normalized, round(subtotal, 2)
+
+
+def quote_proposal_to_response(proposal: QuoteProposal) -> QuoteProposalResponse:
+    return QuoteProposalResponse(
+        message_id=proposal.message_id,
+        title=proposal.title,
+        currency=proposal.currency,
+        client_name=proposal.client_name,
+        project_name=proposal.project_name,
+        site_address=proposal.site_address,
+        intro_text=proposal.intro_text,
+        scope_items=[QuoteLineItem(**item) for item in (proposal.scope_items_json or [])],
+        exclusions_text=proposal.exclusions_text,
+        validity_days=proposal.validity_days,
+        payment_terms=proposal.payment_terms,
+        discount_amount=proposal.discount_amount,
+        subtotal=proposal.subtotal,
+        total_amount=proposal.total_amount,
+    )
+
+
+def build_initial_quote_proposal_from_message(
+    message: Message,
+    qualification: Optional[ElectricalQualification] = None,
+    brief: Optional[ElectricalQuoteBrief] = None,
+) -> QuoteProposalPayload:
+    title = "Electrical Works Proposal"
+    if qualification and qualification.service_type == ElectricalServiceType.solar:
+        title = "Solar Installation Proposal"
+    elif qualification and qualification.service_type == ElectricalServiceType.maintenance:
+        title = "Electrical Maintenance Proposal"
+    elif qualification and qualification.service_type == ElectricalServiceType.strong_current:
+        title = "Electrical Installation Proposal"
+
+    scope_items: list[QuoteLineItem] = []
+
+    if qualification:
+        if qualification.service_type == ElectricalServiceType.strong_current:
+            scope_items = [
+                QuoteLineItem(name="Main electrical installation works", quantity=1, unit="lot", unit_price=0),
+                QuoteLineItem(name="Lighting and socket circuits", quantity=1, unit="lot", unit_price=0),
+                QuoteLineItem(name="Low-current preparation", quantity=1, unit="lot", unit_price=0),
+            ]
+        elif qualification.service_type == ElectricalServiceType.solar:
+            scope_items = [
+                QuoteLineItem(name="Solar system supply and installation", quantity=1, unit="lot", unit_price=0),
+                QuoteLineItem(name="Inverter and protection equipment", quantity=1, unit="lot", unit_price=0),
+                QuoteLineItem(name="Commissioning", quantity=1, unit="lot", unit_price=0),
+            ]
+        elif qualification.service_type == ElectricalServiceType.maintenance:
+            scope_items = [
+                QuoteLineItem(name="Inspection and fault diagnostics", quantity=1, unit="visit", unit_price=0),
+                QuoteLineItem(name="Corrective electrical works", quantity=1, unit="lot", unit_price=0),
+            ]
+
+    intro_text = None
+    if brief and brief.estimator_summary:
+        intro_text = brief.estimator_summary
+    elif qualification and qualification.client_summary:
+        intro_text = qualification.client_summary
+
+    return QuoteProposalPayload(
+        title=title,
+        currency="EUR",
+        client_name=message.sender_name,
+        project_name=message.subject,
+        site_address=brief.location if brief else (qualification.location if qualification else None),
+        intro_text=intro_text,
+        scope_items=scope_items,
+        exclusions_text="Final pricing is subject to site inspection, technical documentation, and final scope confirmation.",
+        validity_days=15,
+        payment_terms="Advance payment and final settlement by agreement.",
+        discount_amount=0,
+    )
 
 def get_message_notes_text(session: Session, message_id: int) -> str:
     try:
@@ -2128,6 +2284,138 @@ def list_message_notes(message_id: int) -> list[InternalNote]:
 
         return notes
 
+
+@app.get("/messages/{message_id}/quote-proposal", response_model=QuoteProposalResponse)
+def get_quote_proposal(message_id: int):
+    with Session(engine) as session:
+        message = session.get(Message, message_id)
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        proposal = session.exec(
+            select(QuoteProposal).where(QuoteProposal.message_id == message_id)
+        ).first()
+
+        if proposal:
+            return quote_proposal_to_response(proposal)
+
+        return QuoteProposalResponse(
+            message_id=message_id,
+            title="Electrical Works Proposal",
+            currency="EUR",
+            client_name=message.sender_name,
+            project_name=message.subject,
+            site_address=None,
+            intro_text=None,
+            scope_items=[],
+            exclusions_text=None,
+            validity_days=15,
+            payment_terms=None,
+            discount_amount=0,
+            subtotal=0,
+            total_amount=0,
+        )
+
+
+@app.put("/messages/{message_id}/quote-proposal", response_model=QuoteProposalResponse)
+def save_quote_proposal(message_id: int, payload: QuoteProposalPayload):
+    with Session(engine) as session:
+        message = session.get(Message, message_id)
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        proposal = session.exec(
+            select(QuoteProposal).where(QuoteProposal.message_id == message_id)
+        ).first()
+
+        normalized_items, subtotal = normalize_quote_items(payload.scope_items)
+        total_amount = round(max(subtotal - float(payload.discount_amount or 0), 0), 2)
+
+        if not proposal:
+            proposal = QuoteProposal(message_id=message_id)
+            session.add(proposal)
+
+        proposal.title = payload.title
+        proposal.currency = payload.currency
+        proposal.client_name = payload.client_name
+        proposal.project_name = payload.project_name
+        proposal.site_address = payload.site_address
+        proposal.intro_text = payload.intro_text
+        proposal.scope_items_json = normalized_items
+        proposal.exclusions_text = payload.exclusions_text
+        proposal.validity_days = payload.validity_days
+        proposal.payment_terms = payload.payment_terms
+        proposal.discount_amount = round(float(payload.discount_amount or 0), 2)
+        proposal.subtotal = subtotal
+        proposal.total_amount = total_amount
+        proposal.updated_at = datetime.utcnow()
+
+        session.add(proposal)
+        session.commit()
+        session.refresh(proposal)
+
+        return quote_proposal_to_response(proposal)
+
+
+@app.post("/messages/{message_id}/quote-proposal/autofill", response_model=QuoteProposalResponse)
+def autofill_quote_proposal(message_id: int):
+    with Session(engine) as session:
+        message = session.get(Message, message_id)
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        qualification = None
+        brief = None
+
+        try:
+            context = build_message_context(session, message)
+            qualification = ai_qualify_electrical_lead(context)
+        except Exception:
+            qualification = None
+
+        try:
+            if qualification is not None:
+                brief = build_electrical_quote_brief(session, message)
+        except Exception:
+            brief = None
+
+        payload = build_initial_quote_proposal_from_message(
+            message=message,
+            qualification=qualification,
+            brief=brief,
+        )
+
+        proposal = session.exec(
+            select(QuoteProposal).where(QuoteProposal.message_id == message_id)
+        ).first()
+
+        normalized_items, subtotal = normalize_quote_items(payload.scope_items)
+        total_amount = round(max(subtotal - float(payload.discount_amount or 0), 0), 2)
+
+        if not proposal:
+            proposal = QuoteProposal(message_id=message_id)
+            session.add(proposal)
+
+        proposal.title = payload.title
+        proposal.currency = payload.currency
+        proposal.client_name = payload.client_name
+        proposal.project_name = payload.project_name
+        proposal.site_address = payload.site_address
+        proposal.intro_text = payload.intro_text
+        proposal.scope_items_json = normalized_items
+        proposal.exclusions_text = payload.exclusions_text
+        proposal.validity_days = payload.validity_days
+        proposal.payment_terms = payload.payment_terms
+        proposal.discount_amount = payload.discount_amount
+        proposal.subtotal = subtotal
+        proposal.total_amount = total_amount
+        proposal.updated_at = datetime.utcnow()
+
+        session.add(proposal)
+        session.commit()
+        session.refresh(proposal)
+
+        return quote_proposal_to_response(proposal)
 
 @app.post("/auth/bootstrap", response_model=UserRead)
 def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
