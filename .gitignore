@@ -2,21 +2,38 @@
 backend/.venv/
 backend/__pycache__/
 backend/*.pyc
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Database / local data
 backend/workflow.db
+*.db
+*.sqlite3
+*.db-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Uploaded/generated files
 backend/uploads/
+backend/google_token.json
+*.log
 
 # Env files
 backend/.env
 frontend/.env
 .env
+.env.*
 
-# Node
+# Node / Next
 frontend/node_modules/
 frontend/.next/
+dist/
+build/
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
-
-backend/google_token.json
