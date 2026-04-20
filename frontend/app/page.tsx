@@ -27,6 +27,10 @@ type QuoteProposal = {
   discount_amount: number;
   subtotal: number;
   total_amount: number;
+  // NEW — quote lifecycle
+  quote_status?: string | null;
+  sent_at?: string | null;
+  responded_at?: string | null;
 };
 type MessageCategory = "lead" | "quote_request" | "invoice" | "support" | "appointment" | "spam" | "other";
 type MessageStatus = "new" | "processing" | "needs_review" | "approved" | "sent" | "rejected" | "error" | "archived" | "ignored" | "waiting_for_info" | "ready_for_quote" | "ready_for_site_visit";
@@ -49,6 +53,34 @@ type AuditLogsResponse = { message_id: number; audit_logs: AuditLogItem[]; };
 type LatestDraftResponse = { message_id: number; draft_id?: number; draft_text: string | null; approval_status?: string; approved_by?: string | null; created_at?: string; updated_at?: string; draft?: null; };
 type Toast = { type: "success" | "error"; message: string; };
 
+// NEW types
+type ReplyTemplate = {
+  id: number;
+  name: string;
+  category?: MessageCategory | null;
+  service_type?: string | null;
+  body_text: string;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+};
+type DashboardStats = {
+  period_days: number;
+  total_messages: number;
+  recent_messages: number;
+  needs_review: number;
+  waiting_for_info: number;
+  by_status: Record<string, number>;
+  by_category: Record<string, number>;
+  quotes_sent: number;
+  quotes_accepted: number;
+  quotes_rejected: number;
+  conversion_rate_pct: number;
+  total_attachments: number;
+  messages_by_day: { date: string; count: number }[];
+};
+type BulkActionKind = "ignore" | "unignore" | "archive" | "unarchive" | "reject" | "process";
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const API_BASE = "http://127.0.0.1:8000";
@@ -65,6 +97,15 @@ const DS = {
   muted: "#F1F5FD",
   border: "#E4ECFC",
   ring: "#2563EB",
+};
+
+// NEW — quote lifecycle colors
+const quoteStatusConfig: Record<string, { bg: string; text: string; dot: string; label: string }> = {
+  draft:          { bg: "bg-slate-100",  text: "text-slate-600",   dot: "bg-slate-400",   label: "Draft" },
+  sent_to_client: { bg: "bg-blue-50",    text: "text-blue-700",    dot: "bg-blue-500",    label: "Sent to client" },
+  accepted:       { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", label: "Accepted" },
+  rejected:       { bg: "bg-red-50",     text: "text-red-700",     dot: "bg-red-500",     label: "Rejected" },
+  expired:        { bg: "bg-orange-50",  text: "text-orange-700",  dot: "bg-orange-400",  label: "Expired" },
 };
 
 const queueConfig: Record<QueueFilter, { label: string; description: string; emptyMessage: string; dot: string; count_color: string; active: string }> = {
@@ -172,6 +213,10 @@ const Icons = {
   folder: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className="size-4"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" /></svg>,
   spin: <svg className="size-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>,
   cursor: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className="size-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.042 21.672L13.684 16.6m0 0l-2.51 2.225.569-9.47 5.227 7.917-3.286-.672zM12 2.25V4.5m5.834.166l-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243l-1.59-1.59" /></svg>,
+  // NEW icons
+  chart: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className="size-3.5"><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg>,
+  template: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className="size-3.5"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>,
+  plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="size-3.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>,
 };
 
 // ─── Design System Components ─────────────────────────────────────────────────
@@ -186,6 +231,17 @@ function Tag({ children, className = "" }: { children: React.ReactNode; classNam
 
 function StatusTag({ status }: { status: MessageStatus }) {
   const s = statusStyles[status];
+  return (
+    <Tag className={`${s.bg} ${s.text}`}>
+      <span className={`size-1.5 shrink-0 rounded-full ${s.dot}`} />
+      {s.label}
+    </Tag>
+  );
+}
+
+// NEW — quote lifecycle tag
+function QuoteStatusTag({ status }: { status: string }) {
+  const s = quoteStatusConfig[status] || quoteStatusConfig.draft;
   return (
     <Tag className={`${s.bg} ${s.text}`}>
       <span className={`size-1.5 shrink-0 rounded-full ${s.dot}`} />
@@ -214,8 +270,6 @@ function CardHeader({ title, subtitle, right }: { title: string; subtitle?: stri
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{children}</p>;
 }
-
-
 
 function FieldValue({ children }: { children: React.ReactNode }) {
   return <p className="mt-1 text-sm text-[#0F172A]">{children}</p>;
@@ -266,11 +320,12 @@ function Textarea({ value, onChange, placeholder, rows = 5, className = "" }: { 
 }
 
 // KPI stat tile — flat design, no shadow
-function KpiTile({ label, value, color }: { label: string; value: number | string; color: string }) {
+function KpiTile({ label, value, color, sub }: { label: string; value: number | string; color: string; sub?: string }) {
   return (
     <div className={`rounded-xl border-0 px-5 py-4 ${color}`}>
       <p className="text-[10px] font-bold uppercase tracking-widest opacity-70">{label}</p>
       <p className="mt-1 text-3xl font-extrabold tabular-nums tracking-tight">{value}</p>
+      {sub && <p className="mt-1 text-[11px] opacity-70">{sub}</p>}
     </div>
   );
 }
@@ -312,6 +367,24 @@ export default function Page() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [ignoreSendersText, setIgnoreSendersText] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // NEW state — templates
+  const [templates, setTemplates] = useState<ReplyTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesPickerOpen, setTemplatesPickerOpen] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplateBody, setNewTemplateBody] = useState("");
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  // NEW state — bulk selection
+  const [selectedBulkIds, setSelectedBulkIds] = useState<Set<number>>(new Set());
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+
+  // NEW state — stats dashboard
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
 
   // Inject Plus Jakarta Sans (UI UX Pro Max recommendation for B2B SaaS / Friendly SaaS pairing)
   useEffect(() => {
@@ -533,9 +606,10 @@ export default function Page() {
       });
     });
   }
+
   // ── Effects & auth setup ──────────────────────────────────────────────────
   useEffect(() => { if (filteredMessages.length === 0) { setSelectedId(null); setSelectedMessage(null); return; } if (!filteredMessages.some(m => m.id === selectedId)) { setSelectedId(filteredMessages[0].id); setSelectedMessage(filteredMessages[0]); } }, [filteredMessages, selectedId]);
-  useEffect(() => { if (token && authUser) { fetchMessages(); fetchSettings(); } }, [token, authUser]);
+  useEffect(() => { if (token && authUser) { fetchMessages(); fetchSettings(); fetchTemplates(); } }, [token, authUser]);
   useEffect(() => { if (selectedId !== null && messages.some(m => m.id === selectedId)) fetchMessageDetail(selectedId); }, [selectedId, messages]);
   useEffect(() => { if (selectedId !== null && !messages.some(m => m.id === selectedId)) { setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setNotes([]); setNewNote(""); setElectricalQualification(null); setQuoteBrief(null); setQuoteProposal(null);} }, [messages, selectedId]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2500); return () => clearTimeout(t); }, [toast]);
@@ -587,76 +661,28 @@ export default function Page() {
   const deleteSelectedInternalMessage = () =>
   action("delete-internal", async () => {
     if (!selectedMessage) return;
-
-    const confirmed = window.confirm(
-      "Delete this message from the internal app only? This will not delete it from Gmail."
-    );
+    const confirmed = window.confirm("Delete this message from the internal app only? This will not delete it from Gmail.");
     if (!confirmed) return;
-
-    const r = await authFetch(
-      `${API_BASE}/messages/${selectedMessage.id}/delete-internal`,
-      { method: "DELETE" }
-    );
+    const r = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/delete-internal`, { method: "DELETE" });
     const d = await r.json();
-
     if (!r.ok) throw new Error(d.detail || "Failed to delete internal message");
-
-    setSelectedId(null);
-    setSelectedMessage(null);
-    setProcessedData(null);
-    setEditedDraft("");
-    setDocuments([]);
-    setAuditLogs([]);
-    setNotes([]);
-    setNewNote("");
-    setElectricalQualification(null);
-    setQuoteBrief(null);
-    setQuoteProposal(null);
-
+    setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setNotes([]); setNewNote(""); setElectricalQualification(null); setQuoteBrief(null); setQuoteProposal(null);
     await fetchMessages();
-
-    setToast({
-      type: "success",
-      message: "Internal message deleted.",
-    });
+    setToast({ type: "success", message: "Internal message deleted." });
   });
 
-const deleteSelectedEmailMessage = () =>
-  action("delete-email", async () => {
-    if (!selectedMessage) return;
-
-    const confirmed = window.confirm(
-      "Delete this email from Gmail? It will be moved to Gmail Trash and removed from the app."
-    );
-    if (!confirmed) return;
-
-    const r = await authFetch(
-      `${API_BASE}/messages/${selectedMessage.id}/delete-email`,
-      { method: "DELETE" }
-    );
-    const d = await r.json();
-
-    if (!r.ok) throw new Error(d.detail || "Failed to delete email");
-
-    setSelectedId(null);
-    setSelectedMessage(null);
-    setProcessedData(null);
-    setEditedDraft("");
-    setDocuments([]);
-    setAuditLogs([]);
-    setNotes([]);
-    setNewNote("");
-    setElectricalQualification(null);
-    setQuoteBrief(null);
-    setQuoteProposal(null);
-
-    await fetchMessages();
-
-    setToast({
-      type: "success",
-      message: "Email moved to Gmail Trash and removed from the app.",
+  const deleteSelectedEmailMessage = () =>
+    action("delete-email", async () => {
+      if (!selectedMessage) return;
+      const confirmed = window.confirm("Delete this email from Gmail? It will be moved to Gmail Trash and removed from the app.");
+      if (!confirmed) return;
+      const r = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/delete-email`, { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "Failed to delete email");
+      setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setNotes([]); setNewNote(""); setElectricalQualification(null); setQuoteBrief(null); setQuoteProposal(null);
+      await fetchMessages();
+      setToast({ type: "success", message: "Email moved to Gmail Trash and removed from the app." });
     });
-  });
   const unarchiveSelectedMessage = () => action("unarchive", async () => { const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/unarchive`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); await fetchMessageDetail(selectedMessage!.id); setToast({ type: "success", message: "Unarchived." }); });
   const syncGmailInbox = (autoProcess = false) => action(autoProcess ? "gmail-ai" : "gmail", async () => { const r = await authFetch(`${API_BASE}/gmail/sync?max_results=10&auto_process=${autoProcess}`, { method: "POST" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); await fetchMessages(); setToast({ type: "success", message: autoProcess ? `Imported ${d.imported_count}, processed ${d.processed_count}.` : `Imported ${d.imported_count}.` }); });
   const clearLocalInbox = () => { if (!window.confirm("Clear all local messages, drafts, and audit logs?")) return; action("clear", async () => { const r = await authFetch(`${API_BASE}/messages/clear-local`, { method: "DELETE" }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); setMessages([]); setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setElectricalQualification(null); setToast({ type: "success", message: "Inbox cleared." }); }); };
@@ -669,6 +695,157 @@ const deleteSelectedEmailMessage = () =>
   async function bootstrapAdmin() { setLoggingIn(true); try { const r = await fetch(`${API_BASE}/auth/bootstrap`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: loginForm.email, full_name: "Jakov", password: loginForm.password }) }); const d = await r.json(); if (!r.ok) throw new Error(d.detail); setToast({ type: "success", message: "Admin created. Log in." }); } catch (e) { setToast({ type: "error", message: e instanceof Error ? e.message : "Error" }); } finally { setLoggingIn(false); } }
   function logout() { localStorage.removeItem("auth_token"); localStorage.removeItem("auth_user"); setToken(null); setAuthUser(null); }
   function toggleRequiredField(f: string) { setSettings(p => ({ ...p, quote_required_fields: p.quote_required_fields.includes(f) ? p.quote_required_fields.filter(x => x !== f) : [...p.quote_required_fields, f] })); }
+
+  // ── NEW: Templates ──────────────────────────────────────────────────────────
+  async function fetchTemplates() {
+    setTemplatesLoading(true);
+    try {
+      const r = await authFetch(`${API_BASE}/templates`);
+      if (!r.ok) return;
+      const d: ReplyTemplate[] = await r.json();
+      setTemplates(d);
+    } catch { }
+    finally { setTemplatesLoading(false); }
+  }
+
+  async function applyTemplate(templateId: number) {
+    if (!selectedMessage) return;
+    try {
+      const r = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/apply-template/${templateId}`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail);
+      setEditedDraft(d.draft_text || "");
+      await fetchTemplates();
+      setTemplatesPickerOpen(false);
+      setToast({ type: "success", message: `Template "${d.template_name}" applied.` });
+    } catch (e) {
+      setToast({ type: "error", message: e instanceof Error ? e.message : "Error applying template" });
+    }
+  }
+
+  async function saveNewTemplate() {
+    if (!newTemplateName.trim() || !newTemplateBody.trim()) return;
+    setSavingTemplate(true);
+    try {
+      const r = await authFetch(`${API_BASE}/templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newTemplateName.trim(), body_text: newTemplateBody.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail);
+      await fetchTemplates();
+      setNewTemplateName("");
+      setNewTemplateBody("");
+      setToast({ type: "success", message: "Template saved." });
+    } catch (e) {
+      setToast({ type: "error", message: e instanceof Error ? e.message : "Error saving template" });
+    } finally {
+      setSavingTemplate(false);
+    }
+  }
+
+  async function deleteTemplate(id: number) {
+    if (!window.confirm("Delete this template?")) return;
+    try {
+      const r = await authFetch(`${API_BASE}/templates/${id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error();
+      await fetchTemplates();
+      setToast({ type: "success", message: "Template deleted." });
+    } catch {
+      setToast({ type: "error", message: "Failed to delete template." });
+    }
+  }
+
+  // ── NEW: Bulk selection & actions ───────────────────────────────────────────
+  function toggleBulkSelect(id: number) {
+    setSelectedBulkIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function clearBulkSelection() { setSelectedBulkIds(new Set()); }
+  async function executeBulkAction(kind: BulkActionKind) {
+    if (selectedBulkIds.size === 0) return;
+    setBulkActionLoading(true);
+    try {
+      const r = await authFetch(`${API_BASE}/messages/bulk-action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_ids: Array.from(selectedBulkIds), action: kind }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail);
+      clearBulkSelection();
+      await fetchMessages();
+      setToast({ type: "success", message: `Bulk ${kind}: ${d.affected} message(s) updated.` });
+    } catch (e) {
+      setToast({ type: "error", message: e instanceof Error ? e.message : "Bulk action failed." });
+    } finally {
+      setBulkActionLoading(false);
+    }
+  }
+
+  // ── NEW: Stats dashboard ────────────────────────────────────────────────────
+  async function fetchStats() {
+    setStatsLoading(true);
+    try {
+      const r = await authFetch(`${API_BASE}/stats/dashboard?days=30`);
+      if (!r.ok) throw new Error();
+      const d: DashboardStats = await r.json();
+      setDashboardStats(d);
+    } catch (e) {
+      setToast({ type: "error", message: "Failed to load stats." });
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  // ── NEW: Quote proposal PDF + lifecycle ─────────────────────────────────────
+  const downloadQuoteProposalPdf = async () => {
+    if (!selectedMessage) return;
+    try {
+      const r = await authFetch(`${API_BASE}/messages/${selectedMessage.id}/quote-proposal/pdf`);
+      if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(err.detail || "PDF failed"); }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `quote-${selectedMessage.id}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      setToast({ type: "success", message: "Quote PDF exported." });
+    } catch (e) {
+      setToast({ type: "error", message: e instanceof Error ? e.message : "Quote PDF export failed." });
+    }
+  };
+
+  const markQuoteSent = () => action("quote-sent", async () => {
+    const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/quote-proposal/mark-sent`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail);
+    setQuoteProposal(recalcQuoteProposal(d));
+    setToast({ type: "success", message: "Quote marked as sent to client." });
+  });
+  const markQuoteAccepted = () => action("quote-accepted", async () => {
+    const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/quote-proposal/mark-accepted`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail);
+    setQuoteProposal(recalcQuoteProposal(d));
+    await fetchMessages();
+    await fetchMessageDetail(selectedMessage!.id);
+    setToast({ type: "success", message: "Quote accepted! Message moved to approved." });
+  });
+  const markQuoteRejected = () => action("quote-rejected", async () => {
+    const r = await authFetch(`${API_BASE}/messages/${selectedMessage!.id}/quote-proposal/mark-rejected`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail);
+    setQuoteProposal(recalcQuoteProposal(d));
+    setToast({ type: "success", message: "Quote marked as rejected." });
+  });
+
 
   // ─── Auth screens ─────────────────────────────────────────────────────────
 
@@ -684,7 +861,6 @@ const deleteSelectedEmailMessage = () =>
     <div style={fontStyle} className="flex min-h-screen items-center justify-center bg-[#F1F5FD] p-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          {/* Logo mark — flat design, primary blue */}
           <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-[#2563EB]">
             <span className="text-white">{React.cloneElement(Icons.chip as React.ReactElement<React.SVGProps<SVGSVGElement>>, { className: "size-7" })}</span>
           </div>
@@ -708,14 +884,14 @@ const deleteSelectedEmailMessage = () =>
 
   // ─── Main App ──────────────────────────────────────────────────────────────
   const rec = recStyles[workflowRec.tone] ?? recStyles.muted;
+  const quoteStatus = quoteProposal?.quote_status || "draft";
 
   return (
     <div style={fontStyle} className="flex min-h-screen flex-col bg-[#F1F5FD] text-[#0F172A]">
 
-      {/* ─── Topnav — flat dark bar, primary blue accents ─── */}
+      {/* ─── Topnav ─── */}
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#0F172A]">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-          {/* Brand */}
           <div className="flex items-center gap-3">
             <div className="flex size-8 items-center justify-center rounded-lg bg-[#2563EB]">
               <span className="text-white">{Icons.chip}</span>
@@ -726,13 +902,14 @@ const deleteSelectedEmailMessage = () =>
             </div>
           </div>
 
-          {/* Actions */}
           <div className="flex flex-wrap items-center gap-1.5">
             <NavAction onClick={fetchMessages} disabled={loading} icon={Icons.refresh}>{loading ? "Refreshing…" : "Refresh"}</NavAction>
             <NavAction onClick={() => syncGmailInbox(false)} disabled={actionLoading !== null} icon={Icons.mail}>Sync Gmail</NavAction>
             <NavAction onClick={() => syncGmailInbox(true)} disabled={actionLoading !== null} highlight icon={Icons.mail}>Sync + AI</NavAction>
             <NavAction onClick={processSelectedMessage} disabled={!selectedMessage || actionLoading !== null} primary icon={Icons.cursor}>Process with AI</NavAction>
             <div className="h-4 w-px bg-white/10" />
+            <NavAction onClick={() => { setStatsOpen(o => !o); if (!statsOpen) fetchStats(); }} icon={Icons.chart} active={statsOpen}>Stats</NavAction>
+            <NavAction onClick={() => setBulkMode(b => !b)} active={bulkMode} icon={Icons.check}>{bulkMode ? "Exit bulk" : "Bulk select"}</NavAction>
             <NavAction onClick={() => setSettingsOpen(o => !o)} icon={Icons.settings} active={settingsOpen}>Settings</NavAction>
             <NavAction onClick={clearLocalInbox} disabled={actionLoading !== null} icon={Icons.trash} danger>Clear inbox</NavAction>
             <div className="h-4 w-px bg-white/10" />
@@ -744,7 +921,101 @@ const deleteSelectedEmailMessage = () =>
         </div>
       </header>
 
-      <div className="flex-1 px-5 py-5">
+      <div className="flex-1 px-5 py-5 pb-24">
+
+        {/* ─── NEW: Stats panel ─── */}
+        {statsOpen && (
+          <Card className="mb-5">
+            <CardHeader
+              title="Dashboard statistics"
+              subtitle="Activity, conversion, and performance over the last 30 days."
+              right={
+                <>
+                  <Btn variant="ghost" size="xs" onClick={fetchStats} disabled={statsLoading} icon={Icons.refresh}>{statsLoading ? "Loading…" : "Refresh"}</Btn>
+                  <Btn variant="ghost" size="xs" onClick={() => setStatsOpen(false)}>Collapse</Btn>
+                </>
+              }
+            />
+            <div className="p-5">
+              {statsLoading ? (
+                <Empty icon={Icons.spin} text="Loading statistics…" />
+              ) : dashboardStats ? (
+                <div className="space-y-5">
+                  {/* KPIs */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    <KpiTile label="Quotes sent" value={dashboardStats.quotes_sent} color="bg-blue-600 text-white" />
+                    <KpiTile label="Accepted" value={dashboardStats.quotes_accepted} color="bg-emerald-600 text-white" />
+                    <KpiTile label="Rejected" value={dashboardStats.quotes_rejected} color="bg-red-600 text-white" />
+                    <KpiTile label="Conversion" value={`${dashboardStats.conversion_rate_pct}%`} color="bg-[#0F172A] text-white" sub="Accepted / sent" />
+                    <KpiTile label="Needs review" value={dashboardStats.needs_review} color="bg-amber-500 text-white" />
+                    <KpiTile label="Waiting info" value={dashboardStats.waiting_for_info} color="bg-sky-600 text-white" />
+                  </div>
+
+                  {/* By category + messages by day side by side */}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">By category (30 days)</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(dashboardStats.by_category).length === 0 && <p className="text-xs text-slate-400">No data</p>}
+                        {Object.entries(dashboardStats.by_category).map(([cat, count]) => {
+                          const cfg = categoryConfig[cat as MessageCategory] || { bg: "bg-slate-100", text: "text-slate-600", label: cat };
+                          return (
+                            <span key={cat} className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold ${cfg.bg} ${cfg.text}`}>
+                              {cfg.label}
+                              <span className="rounded-full bg-white/70 px-1.5 font-bold tabular-nums">{count}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Volume (last 30 days)</p>
+                      {dashboardStats.messages_by_day.length === 0 ? (
+                        <p className="text-xs text-slate-400">No data</p>
+                      ) : (
+                        <div className="flex h-24 items-end gap-0.5">
+                          {(() => {
+                            const maxCount = Math.max(...dashboardStats.messages_by_day.map(d => d.count), 1);
+                            return dashboardStats.messages_by_day.map((d, i) => {
+                              const h = (d.count / maxCount) * 100;
+                              return (
+                                <div key={i} className="flex-1" title={`${d.date}: ${d.count}`}>
+                                  <div className="w-full rounded-sm bg-[#2563EB] transition-all" style={{ height: `${Math.max(h, 2)}%`, minHeight: d.count > 0 ? 2 : 0 }} />
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+                      <p className="mt-2 text-[10px] text-slate-400">Total recent: {dashboardStats.recent_messages} · Attachments: {dashboardStats.total_attachments}</p>
+                    </div>
+                  </div>
+
+                  {/* By status breakdown */}
+                  <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
+                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">By status</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(dashboardStats.by_status).length === 0 && <p className="text-xs text-slate-400">No data</p>}
+                      {Object.entries(dashboardStats.by_status).map(([st, count]) => {
+                        const cfg = statusStyles[st as MessageStatus] || { bg: "bg-slate-100", text: "text-slate-600", dot: "bg-slate-400", label: st };
+                        return (
+                          <span key={st} className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold ${cfg.bg} ${cfg.text}`}>
+                            <span className={`size-1.5 shrink-0 rounded-full ${cfg.dot}`} />
+                            {cfg.label}
+                            <span className="rounded-full bg-white/70 px-1.5 font-bold tabular-nums">{count}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <Empty icon={Icons.chart} text="Click Refresh to load dashboard stats." />
+              )}
+            </div>
+          </Card>
+        )}
 
         {/* Settings panel */}
         {settingsOpen && (
@@ -762,7 +1033,7 @@ const deleteSelectedEmailMessage = () =>
           </Card>
         )}
 
-        {/* KPI tiles — flat design, each color represents a dimension */}
+        {/* KPI tiles */}
         <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
           <KpiTile label="Total messages" value={stats.total} color="bg-[#0F172A] text-white" />
           <KpiTile label="Needs review" value={stats.review} color="bg-[#2563EB] text-white" />
@@ -785,7 +1056,6 @@ const deleteSelectedEmailMessage = () =>
                   <span className="rounded-full bg-[#0F172A] px-2.5 py-1 text-[11px] font-bold text-white">{filteredMessages.length}</span>
                 </div>
 
-                {/* Queue filter grid — 4 cols × 2 rows */}
                 <div className="mt-3 grid grid-cols-4 gap-1">
                   {QUEUE_KEYS.map(key => {
                     const active = queueFilter === key;
@@ -802,37 +1072,69 @@ const deleteSelectedEmailMessage = () =>
                   })}
                 </div>
 
-                {/* Search */}
                 <div className="relative mt-3">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">{Icons.search}</span>
                   <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search subject or sender…"
                     className="w-full rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] py-2.5 pl-8 pr-3 text-xs text-[#0F172A] placeholder-slate-400 outline-none transition-all duration-150 focus:border-[#2563EB] focus:bg-white focus:ring-2 focus:ring-[#2563EB]/10" />
                 </div>
+
+                {/* NEW: bulk mode hint */}
+                {bulkMode && (
+                  <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-[#2563EB]">
+                    Bulk select mode — click checkboxes to select
+                  </p>
+                )}
               </div>
 
-              {/* Message list — compact, data-dense */}
+              {/* Message list */}
               <div className="flex-1 space-y-1 overflow-y-auto p-2.5">
                 {filteredMessages.map(msg => {
                   const active = selectedId === msg.id;
                   const st = statusStyles[msg.status];
                   const cat = categoryConfig[msg.category];
+                  const isBulkSelected = selectedBulkIds.has(msg.id);
                   return (
-                    <button key={msg.id} onClick={() => { setSelectedId(msg.id); setSelectedMessage(msg); }}
-                      className={`cursor-pointer group w-full rounded-xl border p-3.5 text-left transition-all duration-150 ${active ? "border-[#2563EB] bg-[#2563EB] text-white shadow-md" : "border-[#E4ECFC] bg-white hover:border-[#2563EB]/30 hover:bg-[#F1F5FD]"}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <p className={`truncate text-xs font-bold leading-snug ${active ? "text-white" : "text-[#0F172A]"}`}>{msg.subject}</p>
-                        <span className={`shrink-0 text-[10px] ${active ? "text-blue-200" : "text-slate-400"}`}>{formatShortDate(msg.updated_at)}</span>
+                    <div
+                      key={msg.id}
+                      onClick={() => {
+                        if (bulkMode) { toggleBulkSelect(msg.id); return; }
+                        setSelectedId(msg.id);
+                        setSelectedMessage(msg);
+                      }}
+                      className={`cursor-pointer group w-full rounded-xl border p-3.5 text-left transition-all duration-150 ${
+                        active ? "border-[#2563EB] bg-[#2563EB] text-white shadow-md"
+                        : isBulkSelected ? "border-[#2563EB] bg-blue-50"
+                        : "border-[#E4ECFC] bg-white hover:border-[#2563EB]/30 hover:bg-[#F1F5FD]"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {/* Bulk checkbox */}
+                        {bulkMode && (
+                          <input
+                            type="checkbox"
+                            checked={isBulkSelected}
+                            onChange={(e) => { e.stopPropagation(); toggleBulkSelect(msg.id); }}
+                            onClick={e => e.stopPropagation()}
+                            className="mt-0.5 size-3.5 cursor-pointer rounded accent-[#2563EB]"
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className={`truncate text-xs font-bold leading-snug ${active ? "text-white" : "text-[#0F172A]"}`}>{msg.subject}</p>
+                            <span className={`shrink-0 text-[10px] ${active ? "text-blue-200" : "text-slate-400"}`}>{formatShortDate(msg.updated_at)}</span>
+                          </div>
+                          <p className={`mt-0.5 truncate text-[11px] ${active ? "text-blue-200" : "text-slate-500"}`}>{msg.sender_name || msg.sender_email}</p>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : `${st.bg} ${st.text}`}`}>
+                              <span className={`size-1.5 shrink-0 rounded-full ${active ? "bg-white/70" : st.dot}`} />{st.label}
+                            </span>
+                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : `${cat.bg} ${cat.text}`}`}>{cat.label}</span>
+                            {msg.source === "gmail" && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500"}`}>Gmail</span>}
+                            {msg.has_attachments && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-amber-50 text-amber-700"}`}>Attachment</span>}
+                          </div>
+                        </div>
                       </div>
-                      <p className={`mt-0.5 truncate text-[11px] ${active ? "text-blue-200" : "text-slate-500"}`}>{msg.sender_name || msg.sender_email}</p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : `${st.bg} ${st.text}`}`}>
-                          <span className={`size-1.5 shrink-0 rounded-full ${active ? "bg-white/70" : st.dot}`} />{st.label}
-                        </span>
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : `${cat.bg} ${cat.text}`}`}>{cat.label}</span>
-                        {msg.source === "gmail" && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500"}`}>Gmail</span>}
-                        {msg.has_attachments && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-amber-50 text-amber-700"}`}>Attachment</span>}
-                      </div>
-                    </button>
+                    </div>
                   );
                 })}
                 {filteredMessages.length === 0 && <Empty icon={queueFilter === "ignored" ? Icons.ban : queueFilter === "archived" ? Icons.archive : Icons.mail} text={queueConfig[queueFilter].emptyMessage} />}
@@ -852,7 +1154,6 @@ const deleteSelectedEmailMessage = () =>
                   <>
                     {detailLoading && <div className="mb-4 flex items-center gap-2 text-xs text-slate-400">{Icons.spin} Loading details…</div>}
 
-                    {/* Header row */}
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
                         <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Active inquiry</p>
@@ -868,13 +1169,11 @@ const deleteSelectedEmailMessage = () =>
                       </div>
                     </div>
 
-                    {/* Email body */}
                     <div className="mt-4 border-t border-[#E4ECFC] pt-4">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Original email</p>
                       <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] p-4 text-sm leading-7 text-slate-700 whitespace-pre-wrap break-words">{selectedMessage.body_text}</div>
                     </div>
 
-                    {/* Recommendation banner — flat, accent left-bar */}
                     <div className={`mt-4 overflow-hidden rounded-xl border ${rec.border} ${rec.bg}`}>
                       <div className={`h-1 ${rec.bar}`} />
                       <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -898,7 +1197,6 @@ const deleteSelectedEmailMessage = () =>
                       )}
                     </div>
 
-                    {/* Secondary actions */}
                     <div className="mt-4 flex flex-wrap items-center gap-1.5">
                       {selectedMessage.status === "archived"
                         ? <Btn variant="ghost" size="xs" onClick={unarchiveSelectedMessage} disabled={actionLoading !== null} icon={Icons.undo}>Unarchive</Btn>
@@ -914,6 +1212,7 @@ const deleteSelectedEmailMessage = () =>
                 )}
               </div>
             </Card>
+
 
             {/* Electrical Quote Brief */}
             {isElectricalLead && (
@@ -975,7 +1274,6 @@ const deleteSelectedEmailMessage = () =>
               </Card>
             )}
 
-
             {/* Quote summary (non-electrical) */}
             {!isElectricalLead && (
               <Card>
@@ -987,29 +1285,46 @@ const deleteSelectedEmailMessage = () =>
                 </div></div>
               </Card>
             )}
+
+            {/* ─── Quote Builder (electrical leads) ─── */}
             {isElectricalLead && (
               <Card>
                 <CardHeader
                   title="Quote Builder"
-                  subtitle="Build the commercial offer from the qualified inquiry."
+                  subtitle="Build, send, and track the commercial offer from the qualified inquiry."
                   right={
-                    <div className="flex flex-wrap gap-2">
-                      <Btn
-                        variant="ghost"
-                        size="xs"
-                        onClick={autofillQuoteProposal}
-                        disabled={!selectedMessage || quoteProposalSaving}
-                      >
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* NEW: quote status badge */}
+                      {quoteProposal && <QuoteStatusTag status={quoteStatus} />}
+
+                      <Btn variant="ghost" size="xs" onClick={autofillQuoteProposal} disabled={!selectedMessage || quoteProposalSaving}>
                         Autofill from brief
                       </Btn>
-                      <Btn
-                        variant="primary"
-                        size="xs"
-                        onClick={saveQuoteProposal}
-                        disabled={!selectedMessage || !quoteProposal || quoteProposalSaving}
-                      >
+                      <Btn variant="primary" size="xs" onClick={saveQuoteProposal} disabled={!selectedMessage || !quoteProposal || quoteProposalSaving}>
                         {quoteProposalSaving ? "Saving..." : "Save quote"}
                       </Btn>
+
+                      {/* NEW: Download client-facing PDF */}
+                      <Btn variant="ghost" size="xs" onClick={downloadQuoteProposalPdf} disabled={!selectedMessage || !quoteProposal} icon={Icons.download}>
+                        PDF
+                      </Btn>
+
+                      {/* NEW: lifecycle buttons */}
+                      {quoteProposal && quoteStatus === "draft" && (
+                        <Btn variant="sky" size="xs" onClick={markQuoteSent} disabled={actionLoading !== null} icon={Icons.send}>
+                          Mark sent
+                        </Btn>
+                      )}
+                      {quoteProposal && quoteStatus === "sent_to_client" && (
+                        <>
+                          <Btn variant="success" size="xs" onClick={markQuoteAccepted} disabled={actionLoading !== null} icon={Icons.check}>
+                            Accepted
+                          </Btn>
+                          <Btn variant="danger" size="xs" onClick={markQuoteRejected} disabled={actionLoading !== null} icon={Icons.x}>
+                            Rejected
+                          </Btn>
+                        </>
+                      )}
                     </div>
                   }
                 />
@@ -1019,127 +1334,72 @@ const deleteSelectedEmailMessage = () =>
                     <Empty icon={Icons.spin} text="Loading quote proposal..." />
                   ) : quoteProposal ? (
                     <div className="space-y-4">
+                      {/* NEW: timeline info */}
+                      {(quoteProposal.sent_at || quoteProposal.responded_at) && (
+                        <div className="rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-4 py-3 text-xs text-slate-600">
+                          <div className="flex flex-wrap gap-4">
+                            {quoteProposal.sent_at && (
+                              <span>
+                                <span className="font-bold text-slate-500">Sent:</span>{" "}
+                                {formatDate(quoteProposal.sent_at)}
+                              </span>
+                            )}
+                            {quoteProposal.responded_at && (
+                              <span>
+                                <span className="font-bold text-slate-500">Responded:</span>{" "}
+                                {formatDate(quoteProposal.responded_at)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Quote title</label>
-                          <Input
-                            value={quoteProposal.title}
-                            onChange={(e) => updateQuoteProposalField("title", e.target.value)}
-                          />
+                          <Input value={quoteProposal.title} onChange={(e) => updateQuoteProposalField("title", e.target.value)} />
                         </div>
-
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Currency</label>
-                          <Input
-                            value={quoteProposal.currency}
-                            onChange={(e) => updateQuoteProposalField("currency", e.target.value)}
-                          />
+                          <Input value={quoteProposal.currency} onChange={(e) => updateQuoteProposalField("currency", e.target.value)} />
                         </div>
-
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Client name</label>
-                          <Input
-                            value={quoteProposal.client_name || ""}
-                            onChange={(e) => updateQuoteProposalField("client_name", e.target.value)}
-                          />
+                          <Input value={quoteProposal.client_name || ""} onChange={(e) => updateQuoteProposalField("client_name", e.target.value)} />
                         </div>
-
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Project name</label>
-                          <Input
-                            value={quoteProposal.project_name || ""}
-                            onChange={(e) => updateQuoteProposalField("project_name", e.target.value)}
-                          />
+                          <Input value={quoteProposal.project_name || ""} onChange={(e) => updateQuoteProposalField("project_name", e.target.value)} />
                         </div>
-
                         <div className="md:col-span-2">
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Site address</label>
-                          <Input
-                            value={quoteProposal.site_address || ""}
-                            onChange={(e) => updateQuoteProposalField("site_address", e.target.value)}
-                          />
+                          <Input value={quoteProposal.site_address || ""} onChange={(e) => updateQuoteProposalField("site_address", e.target.value)} />
                         </div>
-
                         <div className="md:col-span-2">
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Intro text</label>
-                          <Textarea
-                            value={quoteProposal.intro_text || ""}
-                            onChange={(e) => updateQuoteProposalField("intro_text", e.target.value)}
-                            rows={4}
-                          />
+                          <Textarea value={quoteProposal.intro_text || ""} onChange={(e) => updateQuoteProposalField("intro_text", e.target.value)} rows={4} />
                         </div>
                       </div>
 
                       <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
                         <div className="mb-3 flex items-center justify-between">
                           <p className="text-sm font-bold text-[#0F172A]">Scope items</p>
-                          <Btn variant="ghost" size="xs" onClick={addQuoteLineItem}>
-                            Add line
-                          </Btn>
+                          <Btn variant="ghost" size="xs" onClick={addQuoteLineItem}>Add line</Btn>
                         </div>
-
                         <div className="space-y-3">
                           {quoteProposal.scope_items.map((item, index) => (
                             <div key={index} className="rounded-lg border border-[#E4ECFC] bg-white p-3">
                               <div className="grid gap-3 md:grid-cols-12">
-                                <div className="md:col-span-4">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Item</label>
-                                  <Input
-                                    value={item.name}
-                                    onChange={(e) => updateQuoteLineItem(index, "name", e.target.value)}
-                                  />
-                                </div>
-
-                                <div className="md:col-span-2">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Qty</label>
-                                  <Input
-                                    type="number"
-                                    value={String(item.quantity)}
-                                    onChange={(e) => updateQuoteLineItem(index, "quantity", Number(e.target.value))}
-                                  />
-                                </div>
-
-                                <div className="md:col-span-2">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit</label>
-                                  <Input
-                                    value={item.unit}
-                                    onChange={(e) => updateQuoteLineItem(index, "unit", e.target.value)}
-                                  />
-                                </div>
-
-                                <div className="md:col-span-2">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit price</label>
-                                  <Input
-                                    type="number"
-                                    value={String(item.unit_price)}
-                                    onChange={(e) => updateQuoteLineItem(index, "unit_price", Number(e.target.value))}
-                                  />
-                                </div>
-
-                                <div className="md:col-span-2">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Total</label>
-                                  <div className="rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2.5 text-sm text-slate-700">
-                                    {(item.total || 0).toFixed(2)} {quoteProposal.currency}
-                                  </div>
-                                </div>
-
-                                <div className="md:col-span-11">
-                                  <label className="mb-1 block text-[11px] font-semibold text-slate-500">Description</label>
-                                  <Input
-                                    value={item.description || ""}
-                                    onChange={(e) => updateQuoteLineItem(index, "description", e.target.value)}
-                                  />
-                                </div>
-
-                                <div className="md:col-span-1 flex items-end">
-                                  <Btn variant="danger" size="xs" onClick={() => removeQuoteLineItem(index)}>
-                                    Remove
-                                  </Btn>
-                                </div>
+                                <div className="md:col-span-4"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Item</label><Input value={item.name} onChange={(e) => updateQuoteLineItem(index, "name", e.target.value)} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Qty</label><Input type="number" value={String(item.quantity)} onChange={(e) => updateQuoteLineItem(index, "quantity", Number(e.target.value))} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit</label><Input value={item.unit} onChange={(e) => updateQuoteLineItem(index, "unit", e.target.value)} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit price</label><Input type="number" value={String(item.unit_price)} onChange={(e) => updateQuoteLineItem(index, "unit_price", Number(e.target.value))} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Total</label><div className="rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2.5 text-sm text-slate-700">{(item.total || 0).toFixed(2)} {quoteProposal.currency}</div></div>
+                                <div className="md:col-span-11"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Description</label><Input value={item.description || ""} onChange={(e) => updateQuoteLineItem(index, "description", e.target.value)} /></div>
+                                <div className="md:col-span-1 flex items-end"><Btn variant="danger" size="xs" onClick={() => removeQuoteLineItem(index)}>Remove</Btn></div>
                               </div>
                             </div>
                           ))}
-
                           {quoteProposal.scope_items.length === 0 && (
                             <Empty text="No scope items yet. Use autofill or add line items manually." />
                           )}
@@ -1149,64 +1409,21 @@ const deleteSelectedEmailMessage = () =>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-slate-500">Exclusions</label>
-                          <Textarea
-                            value={quoteProposal.exclusions_text || ""}
-                            onChange={(e) => updateQuoteProposalField("exclusions_text", e.target.value)}
-                            rows={4}
-                          />
+                          <Textarea value={quoteProposal.exclusions_text || ""} onChange={(e) => updateQuoteProposalField("exclusions_text", e.target.value)} rows={4} />
                         </div>
-
                         <div className="space-y-3">
                           <div>
                             <label className="mb-1.5 block text-xs font-semibold text-slate-500">Payment terms</label>
-                            <Textarea
-                              value={quoteProposal.payment_terms || ""}
-                              onChange={(e) => updateQuoteProposalField("payment_terms", e.target.value)}
-                              rows={3}
-                            />
+                            <Textarea value={quoteProposal.payment_terms || ""} onChange={(e) => updateQuoteProposalField("payment_terms", e.target.value)} rows={3} />
                           </div>
-
                           <div className="grid gap-3 grid-cols-2">
-                            <div>
-                              <label className="mb-1.5 block text-xs font-semibold text-slate-500">Validity days</label>
-                              <Input
-                                type="number"
-                                value={String(quoteProposal.validity_days)}
-                                onChange={(e) => updateQuoteProposalField("validity_days", Number(e.target.value))}
-                              />
-                            </div>
-
-                            <div>
-                              <label className="mb-1.5 block text-xs font-semibold text-slate-500">Discount</label>
-                              <Input
-                                type="number"
-                                value={String(quoteProposal.discount_amount)}
-                                onChange={(e) => updateQuoteProposalField("discount_amount", Number(e.target.value))}
-                              />
-                            </div>
+                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Validity days</label><Input type="number" value={String(quoteProposal.validity_days)} onChange={(e) => updateQuoteProposalField("validity_days", Number(e.target.value))} /></div>
+                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Discount</label><Input type="number" value={String(quoteProposal.discount_amount)} onChange={(e) => updateQuoteProposalField("discount_amount", Number(e.target.value))} /></div>
                           </div>
-
                           <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="text-slate-500">Subtotal</span>
-                              <span className="font-semibold text-[#0F172A]">
-                                {quoteProposal.subtotal.toFixed(2)} {quoteProposal.currency}
-                              </span>
-                            </div>
-
-                            <div className="mt-2 flex items-center justify-between text-sm">
-                              <span className="text-slate-500">Discount</span>
-                              <span className="font-semibold text-[#0F172A]">
-                                {Number(quoteProposal.discount_amount).toFixed(2)} {quoteProposal.currency}
-                              </span>
-                            </div>
-
-                            <div className="mt-3 border-t border-[#E4ECFC] pt-3 flex items-center justify-between">
-                              <span className="text-sm font-bold text-[#0F172A]">Total</span>
-                              <span className="text-xl font-extrabold text-[#0F172A]">
-                                {quoteProposal.total_amount.toFixed(2)} {quoteProposal.currency}
-                              </span>
-                            </div>
+                            <div className="flex items-center justify-between text-sm"><span className="text-slate-500">Subtotal</span><span className="font-semibold text-[#0F172A]">{quoteProposal.subtotal.toFixed(2)} {quoteProposal.currency}</span></div>
+                            <div className="mt-2 flex items-center justify-between text-sm"><span className="text-slate-500">Discount</span><span className="font-semibold text-[#0F172A]">{Number(quoteProposal.discount_amount).toFixed(2)} {quoteProposal.currency}</span></div>
+                            <div className="mt-3 border-t border-[#E4ECFC] pt-3 flex items-center justify-between"><span className="text-sm font-bold text-[#0F172A]">Total</span><span className="text-xl font-extrabold text-[#0F172A]">{quoteProposal.total_amount.toFixed(2)} {quoteProposal.currency}</span></div>
                           </div>
                         </div>
                       </div>
@@ -1217,11 +1434,66 @@ const deleteSelectedEmailMessage = () =>
                 </div>
               </Card>
             )}
+
             {/* Draft + Documents */}
             <div className="grid gap-5 xl:grid-cols-2">
               <Card>
-                <CardHeader title="Draft Reply" subtitle="Edit before approving and sending" right={<Btn variant="ghost" size="xs" onClick={saveEditedDraft} disabled={actionLoading !== null || !editedDraft.trim()}>Save draft</Btn>} />
-                <div className="p-5"><Textarea value={editedDraft} onChange={e => setEditedDraft(e.target.value)} placeholder="AI-generated draft will appear here after processing…" rows={12} /><p className="mt-2 text-xs text-slate-400">Review, save, approve, and send.</p></div>
+                <CardHeader
+                  title="Draft Reply"
+                  subtitle="Edit before approving and sending"
+                  right={
+                    <>
+                      {/* NEW: Templates button */}
+                      <Btn variant="ghost" size="xs" onClick={() => setTemplatesPickerOpen(o => !o)} icon={Icons.template}>
+                        {templatesPickerOpen ? "Close templates" : `Templates (${templates.length})`}
+                      </Btn>
+                      <Btn variant="ghost" size="xs" onClick={saveEditedDraft} disabled={actionLoading !== null || !editedDraft.trim()}>Save draft</Btn>
+                    </>
+                  }
+                />
+                <div className="p-5 space-y-4">
+                  {/* NEW: Template picker panel */}
+                  {templatesPickerOpen && (
+                    <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Saved templates</p>
+                      {templatesLoading ? (
+                        <div className="text-xs text-slate-400 flex items-center gap-2">{Icons.spin} Loading…</div>
+                      ) : templates.length === 0 ? (
+                        <p className="text-xs text-slate-400">No templates yet. Create one below.</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {templates.map(t => (
+                            <div key={t.id} className="flex items-center justify-between gap-2 rounded-lg border border-[#E4ECFC] bg-white px-3 py-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-bold text-[#0F172A]">{t.name}</p>
+                                <p className="truncate text-[10px] text-slate-400">Used {t.use_count}× · {t.body_text.slice(0, 60)}{t.body_text.length > 60 ? "…" : ""}</p>
+                              </div>
+                              <div className="flex shrink-0 gap-1">
+                                <Btn variant="primary" size="xs" onClick={() => applyTemplate(t.id)} disabled={!selectedMessage}>Apply</Btn>
+                                <Btn variant="danger" size="xs" onClick={() => deleteTemplate(t.id)} icon={Icons.trash}></Btn>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Create new template */}
+                      <div className="mt-4 space-y-2 border-t border-[#E4ECFC] pt-4">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Create new template</p>
+                        <Input value={newTemplateName} onChange={e => setNewTemplateName(e.target.value)} placeholder="Template name (e.g. Site visit follow-up)" />
+                        <Textarea value={newTemplateBody} onChange={e => setNewTemplateBody(e.target.value)} placeholder="Template body text…" rows={4} />
+                        <div className="flex justify-end">
+                          <Btn variant="primary" size="xs" onClick={saveNewTemplate} disabled={!newTemplateName.trim() || !newTemplateBody.trim() || savingTemplate} icon={Icons.plus}>
+                            {savingTemplate ? "Saving…" : "Save template"}
+                          </Btn>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <Textarea value={editedDraft} onChange={e => setEditedDraft(e.target.value)} placeholder="AI-generated draft will appear here after processing…" rows={12} />
+                  <p className="text-xs text-slate-400">Review, save, approve, and send.</p>
+                </div>
               </Card>
               <Card>
                 <CardHeader title="Documents" subtitle="Files attached to this inquiry" />
@@ -1244,7 +1516,6 @@ const deleteSelectedEmailMessage = () =>
                 <CardHeader title="Audit Log" subtitle="Timeline of actions on this inquiry" />
                 <div className="p-5">{auditLogs.length > 0 ? (
                   <div className="relative pl-5">
-                    {/* Vertical timeline line using primary color */}
                     <div className="absolute bottom-2 left-[7px] top-2 w-px bg-[#E4ECFC]" />
                     {auditLogs.map((log, i) => (
                       <div key={log.id} className="relative pb-3.5 last:pb-0">
@@ -1267,6 +1538,24 @@ const deleteSelectedEmailMessage = () =>
           </div>
         </div>
       </div>
+
+      {/* NEW: Sticky bulk action bar */}
+      {selectedBulkIds.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2" style={fontStyle}>
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#E4ECFC] bg-[#0F172A] px-4 py-3 shadow-2xl">
+            <span className="text-xs font-bold text-white">
+              {selectedBulkIds.size} selected
+            </span>
+            <div className="h-4 w-px bg-white/20" />
+            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("archive")} disabled={bulkActionLoading} icon={Icons.archive}>Archive</Btn>
+            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("ignore")} disabled={bulkActionLoading} icon={Icons.ban}>Ignore</Btn>
+            <Btn variant="primary" size="xs" onClick={() => executeBulkAction("process")} disabled={bulkActionLoading} icon={Icons.cursor}>Process</Btn>
+            <Btn variant="danger" size="xs" onClick={() => executeBulkAction("reject")} disabled={bulkActionLoading} icon={Icons.x}>Reject</Btn>
+            <div className="h-4 w-px bg-white/20" />
+            <Btn variant="ghost" size="xs" onClick={clearBulkSelection} disabled={bulkActionLoading}>Clear</Btn>
+          </div>
+        </div>
+      )}
 
       {toast && <ToastBanner toast={toast} />}
     </div>
