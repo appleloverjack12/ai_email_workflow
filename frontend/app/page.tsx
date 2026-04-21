@@ -898,7 +898,7 @@ export default function Page() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-extrabold text-white">{DEMO_COMPANY_NAME}</span>
-              <span className="rounded bg-[#2563EB]/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#93C5FD]">Demo</span>
+              <span className="rounded bg-[#2563EB]/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#93C5FD]">V1</span>
             </div>
           </div>
 
