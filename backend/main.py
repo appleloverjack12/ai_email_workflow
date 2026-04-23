@@ -62,24 +62,40 @@ app = FastAPI(title="AI Email + Document Workflow API")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Comma-separated list of allowed frontend origins. Local dev defaults are
+# included automatically; add your Vercel URL to CORS_ORIGINS in production.
+_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
+_cors_env = os.getenv("CORS_ORIGINS", _default_origins)
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-engine = create_engine("sqlite:///workflow.db", echo=False)
+# ── Production-ready config ───────────────────────────────────────────────
+# DATA_DIR controls where workflow.db and uploads/ live. Defaults to the
+# backend folder (matches local dev). In Railway, set DATA_DIR=/app/data
+# and mount a persistent volume there so data survives redeploys.
+DATA_DIR = Path(os.getenv("DATA_DIR", ".")).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = DATA_DIR / "workflow.db"
+engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+
+# DEMO_MODE hides Gmail sync features in the frontend (via /config endpoint).
+# Set DEMO_MODE=true in Railway when your client is testing with manual paste.
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
+
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback"
 )
-GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "google_token.json")
+GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", str(DATA_DIR / "google_token.json"))
 
 SECRET_KEY = os.getenv("APP_SECRET_KEY")
 if not SECRET_KEY:
@@ -114,8 +130,8 @@ def get_google_client_config() -> dict:
         }
     }
 
-
-UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -2138,6 +2154,12 @@ def health() -> dict:
     ok = all(v in ("ok", "connected", "not_connected") for v in checks.values())
     return {"ok": ok, "checks": checks}
 
+@app.get("/config")
+def get_runtime_config():
+    """Public config the frontend reads on load. No auth required."""
+    return {
+        "demo_mode": DEMO_MODE,
+    }
 
 # ── NEW: Stats dashboard ──────────────────────────────────────────────────────
 

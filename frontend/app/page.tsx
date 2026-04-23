@@ -83,7 +83,7 @@ type BulkActionKind = "ignore" | "unignore" | "archive" | "unarchive" | "reject"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
 const QUEUE_KEYS: QueueFilter[] = ["needs_review", "waiting_for_info", "new", "approved", "sent", "ignored", "archived", "all"];
 
 // Design System (UI UX Pro Max — B2B SaaS / Data-Dense Dashboard / Flat Design)
