@@ -55,6 +55,15 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+
+# OCR_ENABLED lets us turn off OCR in environments without the Tesseract
+# binary (e.g. Railway's default Nixpacks). When false, image/PDF OCR is
+# skipped gracefully instead of failing mid-request.
+OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() == "true"
+if not OCR_ENABLED:
+    print("[startup] OCR_ENABLED=false — image/PDF OCR will be skipped.")
+
+
 # --- App setup ---
 limiter = Limiter(key_func=get_remote_address)
 
