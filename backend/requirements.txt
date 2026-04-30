@@ -30,7 +30,7 @@ PyMuPDF==1.27.2.2
 
 # OCR
 pytesseract==0.3.13
-Pillow==9.4.0
+Pillow==10.4.0
 
 # Google / Gmail
 google-api-python-client==2.78.0
