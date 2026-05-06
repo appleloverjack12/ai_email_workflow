@@ -440,6 +440,13 @@ class TokenResponse(SQLModel):
     user: UserRead
 
 
+class CreateUserRequest(SQLModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    role: UserRole = UserRole.reviewer
+
+
 class ExtractedFields(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     message_id: int = Field(index=True)
@@ -2728,6 +2735,28 @@ def bootstrap_admin(payload: BootstrapAdminRequest) -> User:
             full_name=payload.full_name.strip(),
             hashed_password=hash_password(payload.password),
             role=UserRole.admin,
+            is_active=True,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+
+@app.post("/auth/users", response_model=UserRead)
+def create_user(
+    payload: CreateUserRequest,
+    current_user: User = Depends(require_roles(UserRole.admin)),
+) -> User:
+    with Session(engine, expire_on_commit=False) as session:
+        existing = get_user_by_email(session, payload.email)
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        user = User(
+            email=payload.email.strip().lower(),
+            full_name=payload.full_name.strip(),
+            hashed_password=hash_password(payload.password),
+            role=payload.role,
             is_active=True,
         )
         session.add(user)
