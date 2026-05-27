@@ -101,22 +101,22 @@ const DS = {
 
 // NEW — quote lifecycle colors
 const quoteStatusConfig: Record<string, { bg: string; text: string; dot: string; label: string }> = {
-  draft:          { bg: "bg-slate-100",  text: "text-slate-600",   dot: "bg-slate-400",   label: "Draft" },
-  sent_to_client: { bg: "bg-blue-50",    text: "text-blue-700",    dot: "bg-blue-500",    label: "Sent to client" },
-  accepted:       { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", label: "Accepted" },
-  rejected:       { bg: "bg-red-50",     text: "text-red-700",     dot: "bg-red-500",     label: "Rejected" },
-  expired:        { bg: "bg-orange-50",  text: "text-orange-700",  dot: "bg-orange-400",  label: "Expired" },
+  draft:          { bg: "bg-slate-100",  text: "text-slate-600",   dot: "bg-slate-400",   label: "Nacrt" },
+  sent_to_client: { bg: "bg-blue-50",    text: "text-blue-700",    dot: "bg-blue-500",    label: "Poslano klijentu" },
+  accepted:       { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", label: "Prihvaćeno" },
+  rejected:       { bg: "bg-red-50",     text: "text-red-700",     dot: "bg-red-500",     label: "Odbijeno" },
+  expired:        { bg: "bg-orange-50",  text: "text-orange-700",  dot: "bg-orange-400",  label: "Isteklo" },
 };
 
 const queueConfig: Record<QueueFilter, { label: string; description: string; emptyMessage: string; dot: string; count_color: string; active: string }> = {
-  needs_review: { label: "Needs review", description: "Messages requiring human review before the next step.", emptyMessage: "No messages waiting for review.", dot: "bg-blue-600", count_color: "text-blue-600", active: "bg-blue-600 text-white" },
-  waiting_for_info: { label: "Waiting for info", description: "Messages waiting for customer details to continue.", emptyMessage: "No messages waiting for information.", dot: "bg-sky-500", count_color: "text-sky-600", active: "bg-sky-500 text-white" },
-  new: { label: "New", description: "Freshly imported messages not yet processed.", emptyMessage: "No new messages.", dot: "bg-slate-400", count_color: "text-slate-600", active: "bg-slate-600 text-white" },
-  approved: { label: "Approved", description: "Approved messages ready to be sent.", emptyMessage: "No approved messages.", dot: "bg-emerald-500", count_color: "text-emerald-600", active: "bg-emerald-600 text-white" },
-  sent: { label: "Sent", description: "Completed outbound replies already sent.", emptyMessage: "No sent messages yet.", dot: "bg-violet-500", count_color: "text-violet-600", active: "bg-violet-600 text-white" },
-  ignored: { label: "Ignored", description: "Auto-triaged low-priority messages.", emptyMessage: "No ignored messages.", dot: "bg-orange-400", count_color: "text-orange-600", active: "bg-orange-500 text-white" },
-  archived: { label: "Archived", description: "Finished items removed from the active queue.", emptyMessage: "No archived messages.", dot: "bg-slate-300", count_color: "text-slate-400", active: "bg-slate-500 text-white" },
-  all: { label: "All", description: "Every message in the system.", emptyMessage: "No messages yet.", dot: "bg-slate-600", count_color: "text-slate-700", active: "bg-slate-900 text-white" },
+  needs_review: { label: "Na pregledu", description: "Poruke koje zahtijevaju ručni pregled.", emptyMessage: "Nema poruka za pregled.", dot: "bg-blue-600", count_color: "text-blue-600", active: "bg-blue-600 text-white" },
+  waiting_for_info: { label: "Čeka info", description: "Poruke koje čekaju dodatne informacije.", emptyMessage: "Nema poruka koje čekaju informacije.", dot: "bg-sky-500", count_color: "text-sky-600", active: "bg-sky-500 text-white" },
+  new: { label: "Novo", description: "Novo uvezene poruke koje nisu obrađene.", emptyMessage: "Nema novih poruka.", dot: "bg-slate-400", count_color: "text-slate-600", active: "bg-slate-600 text-white" },
+  approved: { label: "Odobreno", description: "Odobrene poruke spremne za slanje.", emptyMessage: "Nema odobrenih poruka.", dot: "bg-emerald-500", count_color: "text-emerald-600", active: "bg-emerald-600 text-white" },
+  sent: { label: "Poslano", description: "Odgovori koji su već poslani.", emptyMessage: "Nema poslanih poruka.", dot: "bg-violet-500", count_color: "text-violet-600", active: "bg-violet-600 text-white" },
+  ignored: { label: "Ignorirano", description: "Poruke niskog prioriteta.", emptyMessage: "Nema ignoriranih poruka.", dot: "bg-orange-400", count_color: "text-orange-600", active: "bg-orange-500 text-white" },
+  archived: { label: "Arhivirano", description: "Završene stavke uklonjene iz aktivnog reda.", emptyMessage: "Nema arhiviranih poruka.", dot: "bg-slate-300", count_color: "text-slate-400", active: "bg-slate-500 text-white" },
+  all: { label: "Sve", description: "Sve poruke u sustavu.", emptyMessage: "Nema poruka.", dot: "bg-slate-600", count_color: "text-slate-700", active: "bg-slate-900 text-white" },
 };
 
 function statusMatchesFilter(status: MessageStatus, filter: QueueFilter): boolean {
@@ -132,43 +132,43 @@ function statusMatchesFilter(status: MessageStatus, filter: QueueFilter): boolea
 }
 
 const statusStyles: Record<MessageStatus, { bg: string; text: string; dot: string; label: string }> = {
-  new: { bg: "bg-slate-100", text: "text-slate-600", dot: "bg-slate-400", label: "New" },
-  processing: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", label: "Processing" },
-  waiting_for_info: { bg: "bg-sky-50", text: "text-sky-700", dot: "bg-sky-500", label: "Waiting for info" },
-  needs_review: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500", label: "Needs review" },
-  approved: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", label: "Approved" },
-  sent: { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-500", label: "Sent" },
-  rejected: { bg: "bg-rose-50", text: "text-rose-700", dot: "bg-rose-500", label: "Rejected" },
-  error: { bg: "bg-red-50", text: "text-red-700", dot: "bg-red-500", label: "Error" },
-  archived: { bg: "bg-slate-100", text: "text-slate-500", dot: "bg-slate-300", label: "Archived" },
-  ignored: { bg: "bg-orange-50", text: "text-orange-700", dot: "bg-orange-400", label: "Ignored" },
-  ready_for_quote: { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-400", label: "Ready for quote" },
-  ready_for_site_visit: { bg: "bg-sky-50", text: "text-sky-700", dot: "bg-sky-400", label: "Site visit" },
+  new: { bg: "bg-slate-100", text: "text-slate-600", dot: "bg-slate-400", label: "Novo" },
+  processing: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", label: "U obradi" },
+  waiting_for_info: { bg: "bg-sky-50", text: "text-sky-700", dot: "bg-sky-500", label: "Čeka info" },
+  needs_review: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500", label: "Na pregledu" },
+  approved: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", label: "Odobreno" },
+  sent: { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-500", label: "Poslano" },
+  rejected: { bg: "bg-rose-50", text: "text-rose-700", dot: "bg-rose-500", label: "Odbijeno" },
+  error: { bg: "bg-red-50", text: "text-red-700", dot: "bg-red-500", label: "Greška" },
+  archived: { bg: "bg-slate-100", text: "text-slate-500", dot: "bg-slate-300", label: "Arhivirano" },
+  ignored: { bg: "bg-orange-50", text: "text-orange-700", dot: "bg-orange-400", label: "Ignorirano" },
+  ready_for_quote: { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-400", label: "Spreman za ponudu" },
+  ready_for_site_visit: { bg: "bg-sky-50", text: "text-sky-700", dot: "bg-sky-400", label: "Terenska posjeta" },
 };
 
 const categoryConfig: Record<MessageCategory, { bg: string; text: string; label: string }> = {
   lead: { bg: "bg-blue-50", text: "text-blue-700", label: "Lead" },
-  quote_request: { bg: "bg-indigo-50", text: "text-indigo-700", label: "Quote" },
-  invoice: { bg: "bg-orange-50", text: "text-orange-700", label: "Invoice" },
-  support: { bg: "bg-pink-50", text: "text-pink-700", label: "Support" },
-  appointment: { bg: "bg-teal-50", text: "text-teal-700", label: "Appointment" },
+  quote_request: { bg: "bg-indigo-50", text: "text-indigo-700", label: "Ponuda" },
+  invoice: { bg: "bg-orange-50", text: "text-orange-700", label: "Račun" },
+  support: { bg: "bg-pink-50", text: "text-pink-700", label: "Podrška" },
+  appointment: { bg: "bg-teal-50", text: "text-teal-700", label: "Termin" },
   spam: { bg: "bg-red-50", text: "text-red-700", label: "Spam" },
-  other: { bg: "bg-slate-100", text: "text-slate-600", label: "Other" },
+  other: { bg: "bg-slate-100", text: "text-slate-600", label: "Ostalo" },
 };
 
 const leadPriorityConfig: Record<LeadPriority, { bg: string; text: string; label: string }> = {
-  hot: { bg: "bg-emerald-50", text: "text-emerald-700", label: "High priority" },
-  needs_info: { bg: "bg-amber-50", text: "text-amber-700", label: "Needs more info" },
-  low_detail: { bg: "bg-slate-100", text: "text-slate-600", label: "Low detail" },
+  hot: { bg: "bg-emerald-50", text: "text-emerald-700", label: "Visoki prioritet" },
+  needs_info: { bg: "bg-amber-50", text: "text-amber-700", label: "Treba više info" },
+  low_detail: { bg: "bg-slate-100", text: "text-slate-600", label: "Nizak detalj" },
 };
 
 const serviceConfig: Record<string, { bg: string; text: string; label: string }> = {
-  strong_current: { bg: "bg-blue-50", text: "text-blue-700", label: "Strong current" },
-  weak_current: { bg: "bg-cyan-50", text: "text-cyan-700", label: "Weak current" },
-  solar: { bg: "bg-amber-50", text: "text-amber-700", label: "Solar installation" },
-  maintenance: { bg: "bg-orange-50", text: "text-orange-700", label: "Maintenance" },
-  project_design: { bg: "bg-violet-50", text: "text-violet-700", label: "Design / automation" },
-  unknown: { bg: "bg-slate-100", text: "text-slate-600", label: "Unknown" },
+  strong_current: { bg: "bg-blue-50", text: "text-blue-700", label: "Jaka struja" },
+  weak_current: { bg: "bg-cyan-50", text: "text-cyan-700", label: "Slaba struja" },
+  solar: { bg: "bg-amber-50", text: "text-amber-700", label: "Solarna instalacija" },
+  maintenance: { bg: "bg-orange-50", text: "text-orange-700", label: "Održavanje" },
+  project_design: { bg: "bg-violet-50", text: "text-violet-700", label: "Dizajn / automatizacija" },
+  unknown: { bg: "bg-slate-100", text: "text-slate-600", label: "Nepoznato" },
 };
 
 function formatDate(v: string) {
@@ -421,17 +421,17 @@ export default function Page() {
   function renderFieldValue(v: unknown) { if (v === null || v === undefined || v === "") return "—"; if (Array.isArray(v)) return v.length > 0 ? v.join(", ") : "—"; return String(v); }
 
   const workflowRec = useMemo(() => {
-    if (!selectedMessage) return { tone: "muted", title: "No message selected", desc: "Select a message from the queue.", action: null as null | "process" | "missing-info" | "approve" | "send" | "none", label: "" };
-    if (selectedMessage.status === "ready_for_site_visit") return { tone: "sky", title: "Ready for site visit", desc: "This lead is qualified for a site inspection.", action: "none" as const, label: "" };
-    if (selectedMessage.status === "ready_for_quote") return { tone: "violet", title: "Ready for quote", desc: "This lead is ready for quote preparation.", action: "none" as const, label: "" };
-    if (selectedMessage.status === "waiting_for_info") return { tone: "sky", title: "Waiting for information", desc: "A follow-up draft is ready. Review and send.", action: "send" as const, label: "Send follow-up" };
-    if (selectedMessage.status === "sent") return { tone: "emerald", title: "Completed", desc: "This message has been sent. No further action needed.", action: null, label: "" };
-    if (selectedMessage.status === "ignored") return { tone: "orange", title: "Filtered from workflow", desc: "Low-priority message. Restore it if relevant.", action: null, label: "" };
-    if (selectedMessage.status === "archived") return { tone: "muted", title: "Archived", desc: "Unarchive to return to active workflow.", action: null, label: "" };
-    if (selectedMessage.status === "approved") return { tone: "violet", title: "Ready to send", desc: "Draft is approved and ready to send.", action: "send" as const, label: "Send now" };
-    if (!processedData) return { tone: "blue", title: "Process this request", desc: "Run AI processing to extract details and draft a reply.", action: "process" as const, label: "Process with AI" };
-    if (missingInfoItems.length > 0) return { tone: "amber", title: "Needs more info", desc: `Missing ${missingInfoItems.length} detail${missingInfoItems.length === 1 ? "" : "s"}. Request missing information.`, action: "missing-info" as const, label: "Request missing info" };
-    return { tone: "emerald", title: "Ready to quote", desc: "Request is complete. Review, approve, and send.", action: "approve" as const, label: "Approve draft" };
+    if (!selectedMessage) return { tone: "muted", title: "Nema odabrane poruke", desc: "Odaberi poruku iz reda čekanja.", action: null as null | "process" | "missing-info" | "approve" | "send" | "none", label: "" };
+    if (selectedMessage.status === "ready_for_site_visit") return { tone: "sky", title: "Spreman za terensku posjetu", desc: "Lead je kvalificiran za terenski pregled.", action: "none" as const, label: "" };
+    if (selectedMessage.status === "ready_for_quote") return { tone: "violet", title: "Spreman za ponudu", desc: "Lead je spreman za pripremu ponude.", action: "none" as const, label: "" };
+    if (selectedMessage.status === "waiting_for_info") return { tone: "sky", title: "Čeka informacije", desc: "Nacrt dopisa je spreman. Pregledaj i pošalji.", action: "send" as const, label: "Pošalji dopis" };
+    if (selectedMessage.status === "sent") return { tone: "emerald", title: "Završeno", desc: "Poruka je poslana. Nema daljnjih koraka.", action: null, label: "" };
+    if (selectedMessage.status === "ignored") return { tone: "orange", title: "Filtrirano", desc: "Poruka niskog prioriteta. Vrati ako je relevantna.", action: null, label: "" };
+    if (selectedMessage.status === "archived") return { tone: "muted", title: "Arhivirano", desc: "Vrati iz arhive za povratak u aktivni tok.", action: null, label: "" };
+    if (selectedMessage.status === "approved") return { tone: "violet", title: "Spreman za slanje", desc: "Nacrt je odobren i spreman za slanje.", action: "send" as const, label: "Pošalji sada" };
+    if (!processedData) return { tone: "blue", title: "Obradi ovaj upit", desc: "Pokreni AI obradu za ekstrakciju detalja i izradu odgovora.", action: "process" as const, label: "Obradi s AI-em" };
+    if (missingInfoItems.length > 0) return { tone: "amber", title: "Treba više informacija", desc: `Nedostaje ${missingInfoItems.length} podatak${missingInfoItems.length === 1 ? "" : "a"}. Zatraži informacije.`, action: "missing-info" as const, label: "Zatraži informacije" };
+    return { tone: "emerald", title: "Spreman za ponudu", desc: "Upit je potpun. Pregledaj, odobri i pošalji.", action: "approve" as const, label: "Odobri nacrt" };
   }, [selectedMessage, processedData, missingInfoItems.length]);
 
   // Flat design banner: accent left bar, tinted background
@@ -855,7 +855,7 @@ export default function Page() {
 
   if (!authReady) return (
     <div style={fontStyle} className="flex min-h-screen items-center justify-center bg-[#F1F5FD]">
-      <div className="flex items-center gap-2 text-sm text-slate-400">{Icons.spin} Loading…</div>
+      <div className="flex items-center gap-2 text-sm text-slate-400">{Icons.spin} Učitavanje…</div>
     </div>
   );
 
@@ -867,15 +867,15 @@ export default function Page() {
             <span className="text-white">{React.cloneElement(Icons.chip as React.ReactElement<React.SVGProps<SVGSVGElement>>, { className: "size-7" })}</span>
           </div>
           <h1 className="text-2xl font-extrabold text-[#0F172A]">Elesys Workflow</h1>
-          <p className="mt-1 text-sm text-slate-400">B2B electrical inquiry management</p>
+          <p className="mt-1 text-sm text-slate-400">Upravljanje upitima za električne radove</p>
         </div>
         <Card className="p-6">
           <div className="space-y-4">
-            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Email address</label><Input value={loginForm.email} onChange={e => setLoginForm(p => ({ ...p, email: e.target.value }))} placeholder="you@company.com" /></div>
-            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Password</label><Input type="password" value={loginForm.password} onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))} placeholder="••••••••" /></div>
+            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Email adresa</label><Input value={loginForm.email} onChange={e => setLoginForm(p => ({ ...p, email: e.target.value }))} placeholder="ti@tvrtka.com" /></div>
+            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Lozinka</label><Input type="password" value={loginForm.password} onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))} placeholder="••••••••" /></div>
             <div className="flex gap-2 pt-1">
-              <Btn variant="primary" onClick={login} disabled={loggingIn} className="flex-1">{loggingIn ? "Signing in…" : "Sign in"}</Btn>
-              <Btn variant="ghost" onClick={bootstrapAdmin} disabled={loggingIn}>Create admin</Btn>
+              <Btn variant="primary" onClick={login} disabled={loggingIn} className="flex-1">{loggingIn ? "Prijava…" : "Prijavi se"}</Btn>
+              <Btn variant="ghost" onClick={bootstrapAdmin} disabled={loggingIn}>Kreiraj admina</Btn>
             </div>
           </div>
         </Card>
@@ -905,20 +905,20 @@ export default function Page() {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <NavAction onClick={fetchMessages} disabled={loading} icon={Icons.refresh}>{loading ? "Refreshing…" : "Refresh"}</NavAction>
-            <NavAction onClick={() => syncGmailInbox(false)} disabled={actionLoading !== null} icon={Icons.mail}>Sync Gmail</NavAction>
-            <NavAction onClick={() => syncGmailInbox(true)} disabled={actionLoading !== null} highlight icon={Icons.mail}>Sync + AI</NavAction>
-            <NavAction onClick={processSelectedMessage} disabled={!selectedMessage || actionLoading !== null} primary icon={Icons.cursor}>Process with AI</NavAction>
+            <NavAction onClick={fetchMessages} disabled={loading} icon={Icons.refresh}>{loading ? "Osvježavanje…" : "Osvježi"}</NavAction>
+            <NavAction onClick={() => syncGmailInbox(false)} disabled={actionLoading !== null} icon={Icons.mail}>Sinkroniziraj Gmail</NavAction>
+            <NavAction onClick={() => syncGmailInbox(true)} disabled={actionLoading !== null} highlight icon={Icons.mail}>Sinkroniziraj + AI</NavAction>
+            <NavAction onClick={processSelectedMessage} disabled={!selectedMessage || actionLoading !== null} primary icon={Icons.cursor}>Obradi s AI-em</NavAction>
             <div className="h-4 w-px bg-white/10" />
-            <NavAction onClick={() => { setStatsOpen(o => !o); if (!statsOpen) fetchStats(); }} icon={Icons.chart} active={statsOpen}>Stats</NavAction>
-            <NavAction onClick={() => setBulkMode(b => !b)} active={bulkMode} icon={Icons.check}>{bulkMode ? "Exit bulk" : "Bulk select"}</NavAction>
-            <NavAction onClick={() => setSettingsOpen(o => !o)} icon={Icons.settings} active={settingsOpen}>Settings</NavAction>
-            <NavAction onClick={clearLocalInbox} disabled={actionLoading !== null} icon={Icons.trash} danger>Clear inbox</NavAction>
+            <NavAction onClick={() => { setStatsOpen(o => !o); if (!statsOpen) fetchStats(); }} icon={Icons.chart} active={statsOpen}>Statistika</NavAction>
+            <NavAction onClick={() => setBulkMode(b => !b)} active={bulkMode} icon={Icons.check}>{bulkMode ? "Izađi iz odabira" : "Grupni odabir"}</NavAction>
+            <NavAction onClick={() => setSettingsOpen(o => !o)} icon={Icons.settings} active={settingsOpen}>Postavke</NavAction>
+            <NavAction onClick={clearLocalInbox} disabled={actionLoading !== null} icon={Icons.trash} danger>Očisti inbox</NavAction>
             <div className="h-4 w-px bg-white/10" />
             <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300">
               <span className="font-bold text-white">{authUser.full_name}</span> · {authUser.role}
             </div>
-            <NavAction onClick={logout} icon={Icons.logout}>Logout</NavAction>
+            <NavAction onClick={logout} icon={Icons.logout}>Odjava</NavAction>
           </div>
         </div>
       </header>
@@ -929,36 +929,36 @@ export default function Page() {
         {statsOpen && (
           <Card className="mb-5">
             <CardHeader
-              title="Dashboard statistics"
-              subtitle="Activity, conversion, and performance over the last 30 days."
+              title="Statistika nadzorne ploče"
+              subtitle="Aktivnost, konverzija i performanse zadnjih 30 dana."
               right={
                 <>
-                  <Btn variant="ghost" size="xs" onClick={fetchStats} disabled={statsLoading} icon={Icons.refresh}>{statsLoading ? "Loading…" : "Refresh"}</Btn>
-                  <Btn variant="ghost" size="xs" onClick={() => setStatsOpen(false)}>Collapse</Btn>
+                  <Btn variant="ghost" size="xs" onClick={fetchStats} disabled={statsLoading} icon={Icons.refresh}>{statsLoading ? "Učitavanje…" : "Osvježi"}</Btn>
+                  <Btn variant="ghost" size="xs" onClick={() => setStatsOpen(false)}>Sažmi</Btn>
                 </>
               }
             />
             <div className="p-5">
               {statsLoading ? (
-                <Empty icon={Icons.spin} text="Loading statistics…" />
+                <Empty icon={Icons.spin} text="Učitavanje statistike…" />
               ) : dashboardStats ? (
                 <div className="space-y-5">
                   {/* KPIs */}
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-                    <KpiTile label="Quotes sent" value={dashboardStats.quotes_sent} color="bg-blue-600 text-white" />
-                    <KpiTile label="Accepted" value={dashboardStats.quotes_accepted} color="bg-emerald-600 text-white" />
-                    <KpiTile label="Rejected" value={dashboardStats.quotes_rejected} color="bg-red-600 text-white" />
-                    <KpiTile label="Conversion" value={`${dashboardStats.conversion_rate_pct}%`} color="bg-[#0F172A] text-white" sub="Accepted / sent" />
-                    <KpiTile label="Needs review" value={dashboardStats.needs_review} color="bg-amber-500 text-white" />
-                    <KpiTile label="Waiting info" value={dashboardStats.waiting_for_info} color="bg-sky-600 text-white" />
+                    <KpiTile label="Poslane ponude" value={dashboardStats.quotes_sent} color="bg-blue-600 text-white" />
+                    <KpiTile label="Prihvaćene" value={dashboardStats.quotes_accepted} color="bg-emerald-600 text-white" />
+                    <KpiTile label="Odbijene" value={dashboardStats.quotes_rejected} color="bg-red-600 text-white" />
+                    <KpiTile label="Konverzija" value={`${dashboardStats.conversion_rate_pct}%`} color="bg-[#0F172A] text-white" sub="Prihvaćene / poslane" />
+                    <KpiTile label="Na pregledu" value={dashboardStats.needs_review} color="bg-amber-500 text-white" />
+                    <KpiTile label="Čeka info" value={dashboardStats.waiting_for_info} color="bg-sky-600 text-white" />
                   </div>
 
                   {/* By category + messages by day side by side */}
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">By category (30 days)</p>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Po kategoriji (30 dana)</p>
                       <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(dashboardStats.by_category).length === 0 && <p className="text-xs text-slate-400">No data</p>}
+                        {Object.entries(dashboardStats.by_category).length === 0 && <p className="text-xs text-slate-400">Nema podataka</p>}
                         {Object.entries(dashboardStats.by_category).map(([cat, count]) => {
                           const cfg = categoryConfig[cat as MessageCategory] || { bg: "bg-slate-100", text: "text-slate-600", label: cat };
                           return (
@@ -972,9 +972,9 @@ export default function Page() {
                     </div>
 
                     <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Volume (last 30 days)</p>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Volumen (zadnjih 30 dana)</p>
                       {dashboardStats.messages_by_day.length === 0 ? (
-                        <p className="text-xs text-slate-400">No data</p>
+                        <p className="text-xs text-slate-400">Nema podataka</p>
                       ) : (
                         <div className="flex h-24 items-end gap-0.5">
                           {(() => {
@@ -990,15 +990,15 @@ export default function Page() {
                           })()}
                         </div>
                       )}
-                      <p className="mt-2 text-[10px] text-slate-400">Total recent: {dashboardStats.recent_messages} · Attachments: {dashboardStats.total_attachments}</p>
+                      <p className="mt-2 text-[10px] text-slate-400">Ukupno nedavno: {dashboardStats.recent_messages} · Privici: {dashboardStats.total_attachments}</p>
                     </div>
                   </div>
 
                   {/* By status breakdown */}
                   <div className="rounded-xl border border-[#E4ECFC] bg-white p-4">
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">By status</p>
+                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Po statusu</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {Object.entries(dashboardStats.by_status).length === 0 && <p className="text-xs text-slate-400">No data</p>}
+                      {Object.entries(dashboardStats.by_status).length === 0 && <p className="text-xs text-slate-400">Nema podataka</p>}
                       {Object.entries(dashboardStats.by_status).map(([st, count]) => {
                         const cfg = statusStyles[st as MessageStatus] || { bg: "bg-slate-100", text: "text-slate-600", dot: "bg-slate-400", label: st };
                         return (
@@ -1013,7 +1013,7 @@ export default function Page() {
                   </div>
                 </div>
               ) : (
-                <Empty icon={Icons.chart} text="Click Refresh to load dashboard stats." />
+                <Empty icon={Icons.chart} text="Klikni Osvježi za učitavanje statistike." />
               )}
             </div>
           </Card>
@@ -1022,32 +1022,32 @@ export default function Page() {
         {/* Settings panel */}
         {settingsOpen && (
           <Card className="mb-5">
-            <CardHeader title="Company settings" subtitle="Business rules, reply tone, signature, and quote field requirements." right={
-              <><Btn variant="ghost" size="xs" onClick={() => setSettingsOpen(false)}>Collapse</Btn><Btn variant="primary" size="xs" onClick={saveSettings} disabled={settingsSaving || settingsLoading}>{settingsSaving ? "Saving…" : "Save settings"}</Btn></>
+            <CardHeader title="Postavke tvrtke" subtitle="Pravila, ton odgovora, potpis i polja ponude." right={
+              <><Btn variant="ghost" size="xs" onClick={() => setSettingsOpen(false)}>Sažmi</Btn><Btn variant="primary" size="xs" onClick={saveSettings} disabled={settingsSaving || settingsLoading}>{settingsSaving ? "Spremanje…" : "Spremi postavke"}</Btn></>
             } />
             <div className="flex items-center gap-3 border-b border-[#E4ECFC] px-5 py-3">
                 <span className="text-xs font-semibold text-slate-500">Gmail</span>
-                {gmailConnected === true && <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">Connected</span>}
-                {gmailConnected === false && <><span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[11px] font-semibold text-red-600">Not connected</span><a href={`${API_BASE}/auth/google/start`} target="_blank" rel="noreferrer" className="ml-2 rounded-lg bg-[#2563EB] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#1d4ed8]">Connect Gmail</a></>}
-                {gmailConnected === null && <span className="text-[11px] text-slate-400">Checking…</span>}
-                {gmailConnected === true && <button onClick={async () => { await authFetch(`${API_BASE}/auth/google/disconnect`, {method:"POST"}); setGmailConnected(false); }} className="ml-2 rounded-lg border border-red-200 px-3 py-1.5 text-[11px] font-semibold text-red-500 hover:bg-red-50">Disconnect</button>}
+                {gmailConnected === true && <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">Spojeno</span>}
+                {gmailConnected === false && <><span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[11px] font-semibold text-red-600">Nije spojeno</span><a href={`${API_BASE}/auth/google/start`} target="_blank" rel="noreferrer" className="ml-2 rounded-lg bg-[#2563EB] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#1d4ed8]">Poveži Gmail</a></>}
+                {gmailConnected === null && <span className="text-[11px] text-slate-400">Provjera…</span>}
+                {gmailConnected === true && <button onClick={async () => { await authFetch(`${API_BASE}/auth/google/disconnect`, {method:"POST"}); setGmailConnected(false); }} className="ml-2 rounded-lg border border-red-200 px-3 py-1.5 text-[11px] font-semibold text-red-500 hover:bg-red-50">Odspoji</button>}
               </div>
             <div className="grid gap-5 p-5 md:grid-cols-2">
-              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Company name</label><Input value={settings.company_name} onChange={e => setSettings(p => ({ ...p, company_name: e.target.value }))} placeholder="Elesys" /></div>
-              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Reply tone</label><select value={settings.preferred_reply_tone} onChange={e => setSettings(p => ({ ...p, preferred_reply_tone: e.target.value as ReplyTone }))} className="w-full cursor-pointer rounded-lg border border-[#E4ECFC] bg-white px-3 py-2.5 text-sm outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/10"><option value="professional">Professional</option><option value="friendly">Friendly</option><option value="concise">Concise</option><option value="warm">Warm</option></select></div>
-              <div className="md:col-span-2"><label className="mb-1.5 block text-xs font-semibold text-slate-500">Reply signature</label><Textarea value={settings.reply_signature} onChange={e => setSettings(p => ({ ...p, reply_signature: e.target.value }))} placeholder={"Best,\nElesys"} rows={4} /></div>
-              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Ignore senders <span className="font-normal text-slate-400">(one per line)</span></label><Textarea value={ignoreSendersText} onChange={e => setIgnoreSendersText(e.target.value)} placeholder={"newsletter@\nlinkedin.com"} rows={6} /></div>
-              <div><label className="mb-2 block text-xs font-semibold text-slate-500">Required quote fields</label><div className="space-y-1.5">{[["company_name", "Company name"], ["website_url", "Website URL"], ["budget", "Budget"], ["timeline", "Timeline"], ["location", "Location"], ["pages_needed", "Pages needed"], ["business_goals", "Business goals"], ["requested_service", "Requested service"], ["project_type", "Project type"]].map(([val, lbl]) => <label key={val} className="flex cursor-pointer items-center gap-3 rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2 text-xs text-slate-700 transition-colors duration-150 hover:bg-[#E4ECFC]"><input type="checkbox" checked={settings.quote_required_fields.includes(val)} onChange={() => toggleRequiredField(val)} className="size-3.5 cursor-pointer rounded accent-[#2563EB]" />{lbl}</label>)}</div></div>
+              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Naziv tvrtke</label><Input value={settings.company_name} onChange={e => setSettings(p => ({ ...p, company_name: e.target.value }))} placeholder="Elesys" /></div>
+              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Ton odgovora</label><select value={settings.preferred_reply_tone} onChange={e => setSettings(p => ({ ...p, preferred_reply_tone: e.target.value as ReplyTone }))} className="w-full cursor-pointer rounded-lg border border-[#E4ECFC] bg-white px-3 py-2.5 text-sm outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/10"><option value="professional">Profesionalan</option><option value="friendly">Prijatan</option><option value="concise">Sažet</option><option value="warm">Topao</option></select></div>
+              <div className="md:col-span-2"><label className="mb-1.5 block text-xs font-semibold text-slate-500">Potpis odgovora</label><Textarea value={settings.reply_signature} onChange={e => setSettings(p => ({ ...p, reply_signature: e.target.value }))} placeholder={"S poštovanjem,\nElesys"} rows={4} /></div>
+              <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Ignorirani pošiljatelji <span className="font-normal text-slate-400">(jedan po retku)</span></label><Textarea value={ignoreSendersText} onChange={e => setIgnoreSendersText(e.target.value)} placeholder={"newsletter@\nlinkedin.com"} rows={6} /></div>
+              <div><label className="mb-2 block text-xs font-semibold text-slate-500">Obavezna polja ponude</label><div className="space-y-1.5">{[["company_name", "Naziv tvrtke"], ["website_url", "Web stranica"], ["budget", "Budžet"], ["timeline", "Rok"], ["location", "Lokacija"], ["pages_needed", "Broj stranica"], ["business_goals", "Poslovni ciljevi"], ["requested_service", "Tražena usluga"], ["project_type", "Vrsta projekta"]].map(([val, lbl]) => <label key={val} className="flex cursor-pointer items-center gap-3 rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2 text-xs text-slate-700 transition-colors duration-150 hover:bg-[#E4ECFC]"><input type="checkbox" checked={settings.quote_required_fields.includes(val)} onChange={() => toggleRequiredField(val)} className="size-3.5 cursor-pointer rounded accent-[#2563EB]" />{lbl}</label>)}</div></div>
             </div>
           </Card>
         )}
 
         {/* KPI tiles */}
         <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-          <KpiTile label="Total messages" value={stats.total} color="bg-[#0F172A] text-white" />
-          <KpiTile label="Needs review" value={stats.review} color="bg-[#2563EB] text-white" />
-          <KpiTile label="Approved" value={stats.approved} color="bg-emerald-600 text-white" />
-          <KpiTile label="Sent" value={stats.sent} color="bg-violet-600 text-white" />
+          <KpiTile label="Ukupno poruka" value={stats.total} color="bg-[#0F172A] text-white" />
+          <KpiTile label="Na pregledu" value={stats.review} color="bg-[#2563EB] text-white" />
+          <KpiTile label="Odobreno" value={stats.approved} color="bg-emerald-600 text-white" />
+          <KpiTile label="Poslano" value={stats.sent} color="bg-violet-600 text-white" />
         </div>
 
         {/* Main 2-col layout */}
@@ -1059,7 +1059,7 @@ export default function Page() {
               <div className="border-b border-[#E4ECFC] px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="text-sm font-extrabold text-[#0F172A]">Review Queue</h2>
+                    <h2 className="text-sm font-extrabold text-[#0F172A]">Red za pregled</h2>
                     <p className="mt-0.5 text-[11px] text-slate-400">{queueConfig[queueFilter].description}</p>
                   </div>
                   <span className="rounded-full bg-[#0F172A] px-2.5 py-1 text-[11px] font-bold text-white">{filteredMessages.length}</span>
@@ -1083,14 +1083,14 @@ export default function Page() {
 
                 <div className="relative mt-3">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">{Icons.search}</span>
-                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search subject or sender…"
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Pretraži naslov ili pošiljatelja…"
                     className="w-full rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] py-2.5 pl-8 pr-3 text-xs text-[#0F172A] placeholder-slate-400 outline-none transition-all duration-150 focus:border-[#2563EB] focus:bg-white focus:ring-2 focus:ring-[#2563EB]/10" />
                 </div>
 
                 {/* NEW: bulk mode hint */}
                 {bulkMode && (
                   <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-[#2563EB]">
-                    Bulk select mode — click checkboxes to select
+                    Grupni odabir — označite kućice za odabir
                   </p>
                 )}
               </div>
@@ -1139,7 +1139,7 @@ export default function Page() {
                             </span>
                             <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : `${cat.bg} ${cat.text}`}`}>{cat.label}</span>
                             {msg.source === "gmail" && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500"}`}>Gmail</span>}
-                            {msg.has_attachments && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-amber-50 text-amber-700"}`}>Attachment</span>}
+                            {msg.has_attachments && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${active ? "bg-white/15 text-white" : "bg-amber-50 text-amber-700"}`}>Privitak</span>}
                           </div>
                         </div>
                       </div>
@@ -1158,28 +1158,28 @@ export default function Page() {
             <Card>
               <div className="p-5">
                 {!selectedMessage ? (
-                  <Empty icon={Icons.mail} text="Select a message from the queue to view the full workflow." />
+                  <Empty icon={Icons.mail} text="Odaberi poruku iz reda čekanja za prikaz detalja." />
                 ) : (
                   <>
-                    {detailLoading && <div className="mb-4 flex items-center gap-2 text-xs text-slate-400">{Icons.spin} Loading details…</div>}
+                    {detailLoading && <div className="mb-4 flex items-center gap-2 text-xs text-slate-400">{Icons.spin} Učitavanje detalja…</div>}
 
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Active inquiry</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Aktivni upit</p>
                         <h2 className="mt-1 text-xl font-extrabold leading-snug text-[#0F172A]">{selectedMessage.subject}</h2>
-                        <p className="mt-1 text-sm text-slate-500"><span className="font-semibold text-slate-700">{selectedMessage.sender_name || "Unknown"}</span> · {selectedMessage.sender_email}</p>
+                        <p className="mt-1 text-sm text-slate-500"><span className="font-semibold text-slate-700">{selectedMessage.sender_name || "Nepoznato"}</span> · {selectedMessage.sender_email}</p>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         <StatusTag status={selectedMessage.status} />
                         <Tag className={`${categoryConfig[selectedMessage.category].bg} ${categoryConfig[selectedMessage.category].text}`}>{categoryConfig[selectedMessage.category].label}</Tag>
-                        <Tag className="bg-slate-100 text-slate-600">{selectedMessage.source === "gmail" ? "Gmail" : "Manual"}</Tag>
-                        {selectedMessage.has_attachments && <Tag className="bg-amber-50 text-amber-700">Attachment</Tag>}
+                        <Tag className="bg-slate-100 text-slate-600">{selectedMessage.source === "gmail" ? "Gmail" : "Ručno"}</Tag>
+                        {selectedMessage.has_attachments && <Tag className="bg-amber-50 text-amber-700">Privitak</Tag>}
                         {typeof selectedMessage.ai_confidence === "number" && <Tag className="bg-[#F1F5FD] text-slate-600">AI {Math.round(selectedMessage.ai_confidence * 100)}%</Tag>}
                       </div>
                     </div>
 
                     <div className="mt-4 border-t border-[#E4ECFC] pt-4">
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Original email</p>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Originalni email</p>
                       <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] p-4 text-sm leading-7 text-slate-700 whitespace-pre-wrap break-words">{selectedMessage.body_text}</div>
                     </div>
 
@@ -1187,7 +1187,7 @@ export default function Page() {
                       <div className={`h-1 ${rec.bar}`} />
                       <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between">
                         <div>
-                          <p className={`text-[10px] font-bold uppercase tracking-widest ${rec.title} opacity-50`}>Recommended next step</p>
+                          <p className={`text-[10px] font-bold uppercase tracking-widest ${rec.title} opacity-50`}>Preporučeni sljedeći korak</p>
                           <p className={`mt-1 text-sm font-bold ${rec.title}`}>{workflowRec.title}</p>
                           <p className={`mt-0.5 text-xs leading-relaxed ${rec.title} opacity-75`}>{workflowRec.desc}</p>
                         </div>
@@ -1200,7 +1200,7 @@ export default function Page() {
                       </div>
                       {missingInfoItems.length > 0 && (
                         <div className="border-t border-amber-200/50 bg-white/40 px-4 py-3">
-                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-amber-800">Missing details</p>
+                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-amber-800">Nedostajući podaci</p>
                           <div className="flex flex-wrap gap-1.5">{missingInfoItems.map((item, i) => <span key={i} className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{item}</span>)}</div>
                         </div>
                       )}
@@ -1208,14 +1208,14 @@ export default function Page() {
 
                     <div className="mt-4 flex flex-wrap items-center gap-1.5">
                       {selectedMessage.status === "archived"
-                        ? <Btn variant="ghost" size="xs" onClick={unarchiveSelectedMessage} disabled={actionLoading !== null} icon={Icons.undo}>Unarchive</Btn>
-                        : <Btn variant="ghost" size="xs" onClick={archiveSelectedMessage} disabled={actionLoading !== null} icon={Icons.archive}>Archive</Btn>}
+                        ? <Btn variant="ghost" size="xs" onClick={unarchiveSelectedMessage} disabled={actionLoading !== null} icon={Icons.undo}>Vrati iz arhive</Btn>
+                        : <Btn variant="ghost" size="xs" onClick={archiveSelectedMessage} disabled={actionLoading !== null} icon={Icons.archive}>Arhiviraj</Btn>}
                       {selectedMessage.status === "ignored"
-                        ? <Btn variant="ghost" size="xs" onClick={unignoreSelectedMessage} disabled={actionLoading !== null} icon={Icons.undo}>Unignore</Btn>
-                        : <Btn variant="ghost" size="xs" onClick={ignoreSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "archived"} icon={Icons.ban}>Ignore</Btn>}
-                      <Btn variant="success" size="xs" onClick={approveSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "approved" || selectedMessage.status === "sent" || selectedMessage.status === "archived"} icon={Icons.check}>Approve</Btn>
-                      <Btn variant="ghost" size="xs" onClick={rejectSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "sent"} icon={Icons.x}>Reject</Btn>
-                      <Btn variant="brand" size="xs" onClick={sendSelectedMessage} disabled={actionLoading !== null || selectedMessage.status !== "approved"} icon={Icons.send}>Send via Gmail</Btn>
+                        ? <Btn variant="ghost" size="xs" onClick={unignoreSelectedMessage} disabled={actionLoading !== null} icon={Icons.undo}>Vrati</Btn>
+                        : <Btn variant="ghost" size="xs" onClick={ignoreSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "archived"} icon={Icons.ban}>Ignoriraj</Btn>}
+                      <Btn variant="success" size="xs" onClick={approveSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "approved" || selectedMessage.status === "sent" || selectedMessage.status === "archived"} icon={Icons.check}>Odobri</Btn>
+                      <Btn variant="ghost" size="xs" onClick={rejectSelectedMessage} disabled={actionLoading !== null || selectedMessage.status === "sent"} icon={Icons.x}>Odbij</Btn>
+                      <Btn variant="brand" size="xs" onClick={sendSelectedMessage} disabled={actionLoading !== null || selectedMessage.status !== "approved"} icon={Icons.send}>Pošalji putem Gmaila</Btn>
                     </div>
                   </>
                 )}
@@ -1226,34 +1226,34 @@ export default function Page() {
             {/* Electrical Quote Brief */}
             {isElectricalLead && (
               <Card>
-                <CardHeader title="Electrical Quote Brief" subtitle="Estimator handoff — site visit and quote preparation" right={quoteBrief ? (
-                  <><Tag className={`${leadPriorityConfig[quoteBrief.lead_priority].bg} ${leadPriorityConfig[quoteBrief.lead_priority].text}`}>{leadPriorityConfig[quoteBrief.lead_priority].label}</Tag><Btn variant="sky" size="xs" onClick={markReadyForSiteVisit} disabled={!selectedMessage || actionLoading !== null}>Site visit</Btn><Btn variant="brand" size="xs" onClick={markReadyForQuote} disabled={!selectedMessage || actionLoading !== null}>Ready for quote</Btn><Btn variant="ghost" size="xs" onClick={downloadQuoteBriefPdf} disabled={!selectedMessage || quoteBriefLoading || actionLoading !== null} icon={Icons.download}>PDF</Btn></>
+                <CardHeader title="Sažetak ponude" subtitle="Predaja procjenitelju — terenska posjeta i priprema ponude" right={quoteBrief ? (
+                  <><Tag className={`${leadPriorityConfig[quoteBrief.lead_priority].bg} ${leadPriorityConfig[quoteBrief.lead_priority].text}`}>{leadPriorityConfig[quoteBrief.lead_priority].label}</Tag><Btn variant="sky" size="xs" onClick={markReadyForSiteVisit} disabled={!selectedMessage || actionLoading !== null}>Terenska posjeta</Btn><Btn variant="brand" size="xs" onClick={markReadyForQuote} disabled={!selectedMessage || actionLoading !== null}>Spremi za ponudu</Btn><Btn variant="ghost" size="xs" onClick={downloadQuoteBriefPdf} disabled={!selectedMessage || quoteBriefLoading || actionLoading !== null} icon={Icons.download}>PDF</Btn></>
                 ) : null} />
                 <div className="p-5">
-                  {quoteBriefLoading ? <Empty icon={Icons.spin} text="Loading quote brief…" /> : quoteBrief ? (
+                  {quoteBriefLoading ? <Empty icon={Icons.spin} text="Učitavanje sažetka…" /> : quoteBrief ? (
                     <div className="space-y-4">
                       <div className="flex items-start justify-between gap-4 rounded-xl bg-[#F1F5FD] p-4">
                         <div>
-                          <FieldLabel>Service type</FieldLabel>
+                          <FieldLabel>Vrsta usluge</FieldLabel>
                           <p className="mt-1 text-base font-extrabold text-[#0F172A]">{serviceConfig[quoteBrief.service_type]?.label || quoteBrief.service_type}</p>
                           <p className="mt-1.5 text-sm leading-relaxed text-slate-600">{quoteBrief.estimator_summary}</p>
                         </div>
                         <div className="shrink-0 text-right">
-                          <FieldLabel>Lead score</FieldLabel>
+                          <FieldLabel>Ocjena upita</FieldLabel>
                           <p className="mt-1 text-4xl font-extrabold tabular-nums text-[#0F172A]">{quoteBrief.lead_score}<span className="text-base font-semibold text-slate-400">/100</span></p>
                         </div>
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
-                        {[["Client", quoteBrief.client_name], ["Email", quoteBrief.client_email], ["Phone", quoteBrief.client_phone], ["Location", quoteBrief.location], ["Property type", quoteBrief.object_type], ["Timeline", quoteBrief.timeline], ["Budget", quoteBrief.budget], ["Urgency", quoteBrief.urgency]].map(([l, v]) => (
+                        {[["Klijent", quoteBrief.client_name], ["Email", quoteBrief.client_email], ["Telefon", quoteBrief.client_phone], ["Lokacija", quoteBrief.location], ["Vrsta objekta", quoteBrief.object_type], ["Rok", quoteBrief.timeline], ["Budžet", quoteBrief.budget], ["Hitnost", quoteBrief.urgency]].map(([l, v]) => (
                           <div key={l} className="rounded-lg border border-[#E4ECFC] bg-white p-3"><FieldLabel>{l}</FieldLabel><FieldValue>{v || "—"}</FieldValue></div>
                         ))}
-                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Installation type</FieldLabel><FieldValue>{quoteBrief.installation_type || "—"}</FieldValue></div>
-                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Attachments / documents</FieldLabel><FieldValue>{quoteBrief.attachments_summary || "—"}</FieldValue></div>
+                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Vrsta instalacije</FieldLabel><FieldValue>{quoteBrief.installation_type || "—"}</FieldValue></div>
+                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Privici / dokumenti</FieldLabel><FieldValue>{quoteBrief.attachments_summary || "—"}</FieldValue></div>
                       </div>
-                      {quoteBrief.missing_fields.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-800">Missing technical details</p><div className="flex flex-wrap gap-1.5">{quoteBrief.missing_fields.map((f, i) => <span key={i} className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs font-medium text-amber-800">{f}</span>)}</div></div>}
-                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Recommended next step</p><p className="text-sm text-emerald-900">{quoteBrief.recommended_next_step}</p></div>
+                      {quoteBrief.missing_fields.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-800">Nedostajući tehnički podaci</p><div className="flex flex-wrap gap-1.5">{quoteBrief.missing_fields.map((f, i) => <span key={i} className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs font-medium text-amber-800">{f}</span>)}</div></div>}
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Preporučeni sljedeći korak</p><p className="text-sm text-emerald-900">{quoteBrief.recommended_next_step}</p></div>
                     </div>
-                  ) : <Empty icon={Icons.folder} text="Select and process a relevant inquiry to see the estimator brief." />}
+                  ) : <Empty icon={Icons.folder} text="Odaberi i obradi upit za prikaz sažetka." />}
                 </div>
               </Card>
             )}
@@ -1261,24 +1261,24 @@ export default function Page() {
             {/* Electrical qualification */}
             {isElectricalLead && (
               <Card>
-                <CardHeader title="Lead Qualification" subtitle="Tailored intake for electrical and solar inquiries" right={electricalQualification ? (
+                <CardHeader title="Kvalifikacija upita" subtitle="Detaljna analiza za električne i solarne upite" right={electricalQualification ? (
                   <><Tag className={`${serviceConfig[electricalQualification.service_type]?.bg || "bg-slate-100"} ${serviceConfig[electricalQualification.service_type]?.text || "text-slate-600"}`}>{serviceConfig[electricalQualification.service_type]?.label}</Tag><Tag className={`${leadPriorityConfig[electricalQualification.lead_priority].bg} ${leadPriorityConfig[electricalQualification.lead_priority].text}`}>{leadPriorityConfig[electricalQualification.lead_priority].label}</Tag></>
                 ) : null} />
                 <div className="p-5">
-                  {qualificationLoading ? <Empty icon={Icons.spin} text="Loading qualification…" /> : electricalQualification ? (
+                  {qualificationLoading ? <Empty icon={Icons.spin} text="Učitavanje kvalifikacije…" /> : electricalQualification ? (
                     <div className="space-y-4">
                       <div className="flex items-start justify-between gap-4 rounded-xl bg-[#F1F5FD] p-4">
-                        <div><FieldLabel>Lead summary</FieldLabel><p className="mt-1.5 text-sm leading-relaxed text-slate-700">{electricalQualification.client_summary}</p></div>
+                        <div><FieldLabel>Sažetak upita</FieldLabel><p className="mt-1.5 text-sm leading-relaxed text-slate-700">{electricalQualification.client_summary}</p></div>
                         <div className="shrink-0 text-right"><FieldLabel>Lead score</FieldLabel><p className="mt-1 text-4xl font-extrabold tabular-nums text-[#0F172A]">{electricalQualification.lead_score}<span className="text-base font-semibold text-slate-400">/100</span></p></div>
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
-                        {[["Object type", electricalQualification.object_type], ["Location", electricalQualification.location], ["Budget", electricalQualification.budget], ["Timeline", electricalQualification.timeline], ["Urgency", electricalQualification.urgency], ["Installation type", electricalQualification.installation_type]].map(([l, v]) => <div key={l} className="rounded-lg border border-[#E4ECFC] bg-white p-3"><FieldLabel>{l}</FieldLabel><FieldValue>{v || "—"}</FieldValue></div>)}
-                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Attachments / documents</FieldLabel><FieldValue>{electricalQualification.attachments_summary || "No attachment context detected."}</FieldValue></div>
+                        {[["Vrsta objekta", electricalQualification.object_type], ["Lokacija", electricalQualification.location], ["Budžet", electricalQualification.budget], ["Rok", electricalQualification.timeline], ["Hitnost", electricalQualification.urgency], ["Vrsta instalacije", electricalQualification.installation_type]].map(([l, v]) => <div key={l} className="rounded-lg border border-[#E4ECFC] bg-white p-3"><FieldLabel>{l}</FieldLabel><FieldValue>{v || "—"}</FieldValue></div>)}
+                        <div className="rounded-lg border border-[#E4ECFC] bg-white p-3 sm:col-span-2"><FieldLabel>Privici / dokumenti</FieldLabel><FieldValue>{electricalQualification.attachments_summary || "Nije pronađen kontekst privitaka."}</FieldValue></div>
                       </div>
-                      {electricalQualification.missing_fields.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-800">Missing technical details</p><div className="flex flex-wrap gap-1.5">{electricalQualification.missing_fields.map((f, i) => <span key={i} className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs font-medium text-amber-800">{f}</span>)}</div></div>}
-                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Recommended next step</p><p className="text-sm text-emerald-900">{electricalQualification.recommended_next_step}</p></div>
+                      {electricalQualification.missing_fields.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-800">Nedostajući tehnički podaci</p><div className="flex flex-wrap gap-1.5">{electricalQualification.missing_fields.map((f, i) => <span key={i} className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs font-medium text-amber-800">{f}</span>)}</div></div>}
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Preporučeni sljedeći korak</p><p className="text-sm text-emerald-900">{electricalQualification.recommended_next_step}</p></div>
                     </div>
-                  ) : <Empty icon={Icons.chip} text="Process a relevant inquiry to see the electrical qualification view." />}
+                  ) : <Empty icon={Icons.chip} text="Obradi upit za prikaz kvalifikacije." />}
                 </div>
               </Card>
             )}
@@ -1286,9 +1286,9 @@ export default function Page() {
             {/* Quote summary (non-electrical) */}
             {!isElectricalLead && (
               <Card>
-                <CardHeader title="Quote Summary" right={<Tag className={missingInfoItems.length > 0 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}>{missingInfoItems.length > 0 ? "Needs more info" : "Ready to review"}</Tag>} />
+                <CardHeader title="Sažetak upita" right={<Tag className={missingInfoItems.length > 0 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}>{missingInfoItems.length > 0 ? "Treba više informacija" : "Spreman za pregled"}</Tag>} />
                 <div className="p-5"><div className="grid gap-2 sm:grid-cols-2">
-                  {[{ l: "Requested service", v: quoteSummary.requested_service, w: false }, { l: "Project type", v: quoteSummary.project_type, w: false }, { l: "Company", v: quoteSummary.company_name, w: false }, { l: "Website URL", v: quoteSummary.website_url, w: false }, { l: "Budget", v: quoteSummary.budget, w: false }, { l: "Timeline", v: quoteSummary.timeline, w: false }, { l: "Location", v: quoteSummary.location, w: true }, { l: "Pages needed", v: quoteSummary.pages_needed, w: true }, { l: "Business goals", v: quoteSummary.business_goals, w: true }, { l: "Missing information", v: quoteSummary.missing_information, w: true }].map((item, i) => (
+                  {[{ l: "Tražena usluga", v: quoteSummary.requested_service, w: false }, { l: "Vrsta projekta", v: quoteSummary.project_type, w: false }, { l: "Tvrtka", v: quoteSummary.company_name, w: false }, { l: "Web stranica", v: quoteSummary.website_url, w: false }, { l: "Budžet", v: quoteSummary.budget, w: false }, { l: "Rok", v: quoteSummary.timeline, w: false }, { l: "Lokacija", v: quoteSummary.location, w: true }, { l: "Broj stranica", v: quoteSummary.pages_needed, w: true }, { l: "Poslovni ciljevi", v: quoteSummary.business_goals, w: true }, { l: "Nedostajuće informacije", v: quoteSummary.missing_information, w: true }].map((item, i) => (
                     <div key={i} className={`rounded-lg border border-[#E4ECFC] bg-white p-3 ${item.w ? "sm:col-span-2" : ""}`}><FieldLabel>{item.l}</FieldLabel><FieldValue>{renderFieldValue(item.v)}</FieldValue></div>
                   ))}
                 </div></div>
@@ -1299,18 +1299,18 @@ export default function Page() {
             {isElectricalLead && (
               <Card>
                 <CardHeader
-                  title="Quote Builder"
-                  subtitle="Build, send, and track the commercial offer from the qualified inquiry."
+                  title="Graditelj ponude"
+                  subtitle="Izradi, pošalji i prati komercijalnu ponudu za kvalificirani upit."
                   right={
                     <div className="flex flex-wrap items-center gap-2">
                       {/* NEW: quote status badge */}
                       {quoteProposal && <QuoteStatusTag status={quoteStatus} />}
 
                       <Btn variant="ghost" size="xs" onClick={autofillQuoteProposal} disabled={!selectedMessage || quoteProposalSaving}>
-                        Autofill from brief
+                        Automatski popuni
                       </Btn>
                       <Btn variant="primary" size="xs" onClick={saveQuoteProposal} disabled={!selectedMessage || !quoteProposal || quoteProposalSaving}>
-                        {quoteProposalSaving ? "Saving..." : "Save quote"}
+                        {quoteProposalSaving ? "Spremanje..." : "Spremi ponudu"}
                       </Btn>
 
                       {/* NEW: Download client-facing PDF */}
@@ -1321,16 +1321,16 @@ export default function Page() {
                       {/* NEW: lifecycle buttons */}
                       {quoteProposal && quoteStatus === "draft" && (
                         <Btn variant="sky" size="xs" onClick={markQuoteSent} disabled={actionLoading !== null} icon={Icons.send}>
-                          Mark sent
+                          Označi kao poslano
                         </Btn>
                       )}
                       {quoteProposal && quoteStatus === "sent_to_client" && (
                         <>
                           <Btn variant="success" size="xs" onClick={markQuoteAccepted} disabled={actionLoading !== null} icon={Icons.check}>
-                            Accepted
+                            Prihvaćeno
                           </Btn>
                           <Btn variant="danger" size="xs" onClick={markQuoteRejected} disabled={actionLoading !== null} icon={Icons.x}>
-                            Rejected
+                            Odbijeno
                           </Btn>
                         </>
                       )}
@@ -1340,7 +1340,7 @@ export default function Page() {
 
                 <div className="p-5">
                   {quoteProposalLoading ? (
-                    <Empty icon={Icons.spin} text="Loading quote proposal..." />
+                    <Empty icon={Icons.spin} text="Učitavanje ponude..." />
                   ) : quoteProposal ? (
                     <div className="space-y-4">
                       {/* NEW: timeline info */}
@@ -1349,13 +1349,13 @@ export default function Page() {
                           <div className="flex flex-wrap gap-4">
                             {quoteProposal.sent_at && (
                               <span>
-                                <span className="font-bold text-slate-500">Sent:</span>{" "}
+                                <span className="font-bold text-slate-500">Poslano:</span>{" "}
                                 {formatDate(quoteProposal.sent_at)}
                               </span>
                             )}
                             {quoteProposal.responded_at && (
                               <span>
-                                <span className="font-bold text-slate-500">Responded:</span>{" "}
+                                <span className="font-bold text-slate-500">Odgovoreno:</span>{" "}
                                 {formatDate(quoteProposal.responded_at)}
                               </span>
                             )}
@@ -1365,80 +1365,80 @@ export default function Page() {
 
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Quote title</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Naslov ponude</label>
                           <Input value={quoteProposal.title} onChange={(e) => updateQuoteProposalField("title", e.target.value)} />
                         </div>
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Currency</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Valuta</label>
                           <Input value={quoteProposal.currency} onChange={(e) => updateQuoteProposalField("currency", e.target.value)} />
                         </div>
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Client name</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Ime klijenta</label>
                           <Input value={quoteProposal.client_name || ""} onChange={(e) => updateQuoteProposalField("client_name", e.target.value)} />
                         </div>
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Project name</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Naziv projekta</label>
                           <Input value={quoteProposal.project_name || ""} onChange={(e) => updateQuoteProposalField("project_name", e.target.value)} />
                         </div>
                         <div className="md:col-span-2">
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Site address</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Adresa gradilišta</label>
                           <Input value={quoteProposal.site_address || ""} onChange={(e) => updateQuoteProposalField("site_address", e.target.value)} />
                         </div>
                         <div className="md:col-span-2">
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Intro text</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Uvodni tekst</label>
                           <Textarea value={quoteProposal.intro_text || ""} onChange={(e) => updateQuoteProposalField("intro_text", e.target.value)} rows={4} />
                         </div>
                       </div>
 
                       <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
                         <div className="mb-3 flex items-center justify-between">
-                          <p className="text-sm font-bold text-[#0F172A]">Scope items</p>
-                          <Btn variant="ghost" size="xs" onClick={addQuoteLineItem}>Add line</Btn>
+                          <p className="text-sm font-bold text-[#0F172A]">Stavke ponude</p>
+                          <Btn variant="ghost" size="xs" onClick={addQuoteLineItem}>Dodaj stavku</Btn>
                         </div>
                         <div className="space-y-3">
                           {quoteProposal.scope_items.map((item, index) => (
                             <div key={index} className="rounded-lg border border-[#E4ECFC] bg-white p-3">
                               <div className="grid gap-3 md:grid-cols-12">
-                                <div className="md:col-span-4"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Item</label><Input value={item.name} onChange={(e) => updateQuoteLineItem(index, "name", e.target.value)} /></div>
-                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Qty</label><Input type="number" value={String(item.quantity)} onChange={(e) => updateQuoteLineItem(index, "quantity", Number(e.target.value))} /></div>
-                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit</label><Input value={item.unit} onChange={(e) => updateQuoteLineItem(index, "unit", e.target.value)} /></div>
-                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Unit price</label><Input type="number" value={String(item.unit_price)} onChange={(e) => updateQuoteLineItem(index, "unit_price", Number(e.target.value))} /></div>
-                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Total</label><div className="rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2.5 text-sm text-slate-700">{(item.total || 0).toFixed(2)} {quoteProposal.currency}</div></div>
-                                <div className="md:col-span-11"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Description</label><Input value={item.description || ""} onChange={(e) => updateQuoteLineItem(index, "description", e.target.value)} /></div>
-                                <div className="md:col-span-1 flex items-end"><Btn variant="danger" size="xs" onClick={() => removeQuoteLineItem(index)}>Remove</Btn></div>
+                                <div className="md:col-span-4"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Stavka</label><Input value={item.name} onChange={(e) => updateQuoteLineItem(index, "name", e.target.value)} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Kol.</label><Input type="number" value={String(item.quantity)} onChange={(e) => updateQuoteLineItem(index, "quantity", Number(e.target.value))} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Jed.</label><Input value={item.unit} onChange={(e) => updateQuoteLineItem(index, "unit", e.target.value)} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Jed. cijena</label><Input type="number" value={String(item.unit_price)} onChange={(e) => updateQuoteLineItem(index, "unit_price", Number(e.target.value))} /></div>
+                                <div className="md:col-span-2"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Ukupno</label><div className="rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3 py-2.5 text-sm text-slate-700">{(item.total || 0).toFixed(2)} {quoteProposal.currency}</div></div>
+                                <div className="md:col-span-11"><label className="mb-1 block text-[11px] font-semibold text-slate-500">Opis</label><Input value={item.description || ""} onChange={(e) => updateQuoteLineItem(index, "description", e.target.value)} /></div>
+                                <div className="md:col-span-1 flex items-end"><Btn variant="danger" size="xs" onClick={() => removeQuoteLineItem(index)}>Ukloni</Btn></div>
                               </div>
                             </div>
                           ))}
                           {quoteProposal.scope_items.length === 0 && (
-                            <Empty text="No scope items yet. Use autofill or add line items manually." />
+                            <Empty text="Nema stavki. Koristi automatsko popunjavanje ili dodaj ručno." />
                           )}
                         </div>
                       </div>
 
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Exclusions</label>
+                          <label className="mb-1.5 block text-xs font-semibold text-slate-500">Isključenja</label>
                           <Textarea value={quoteProposal.exclusions_text || ""} onChange={(e) => updateQuoteProposalField("exclusions_text", e.target.value)} rows={4} />
                         </div>
                         <div className="space-y-3">
                           <div>
-                            <label className="mb-1.5 block text-xs font-semibold text-slate-500">Payment terms</label>
+                            <label className="mb-1.5 block text-xs font-semibold text-slate-500">Uvjeti plaćanja</label>
                             <Textarea value={quoteProposal.payment_terms || ""} onChange={(e) => updateQuoteProposalField("payment_terms", e.target.value)} rows={3} />
                           </div>
                           <div className="grid gap-3 grid-cols-2">
-                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Validity days</label><Input type="number" value={String(quoteProposal.validity_days)} onChange={(e) => updateQuoteProposalField("validity_days", Number(e.target.value))} /></div>
-                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Discount</label><Input type="number" value={String(quoteProposal.discount_amount)} onChange={(e) => updateQuoteProposalField("discount_amount", Number(e.target.value))} /></div>
+                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Valjanost (dani)</label><Input type="number" value={String(quoteProposal.validity_days)} onChange={(e) => updateQuoteProposalField("validity_days", Number(e.target.value))} /></div>
+                            <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Popust</label><Input type="number" value={String(quoteProposal.discount_amount)} onChange={(e) => updateQuoteProposalField("discount_amount", Number(e.target.value))} /></div>
                           </div>
                           <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
-                            <div className="flex items-center justify-between text-sm"><span className="text-slate-500">Subtotal</span><span className="font-semibold text-[#0F172A]">{quoteProposal.subtotal.toFixed(2)} {quoteProposal.currency}</span></div>
-                            <div className="mt-2 flex items-center justify-between text-sm"><span className="text-slate-500">Discount</span><span className="font-semibold text-[#0F172A]">{Number(quoteProposal.discount_amount).toFixed(2)} {quoteProposal.currency}</span></div>
-                            <div className="mt-3 border-t border-[#E4ECFC] pt-3 flex items-center justify-between"><span className="text-sm font-bold text-[#0F172A]">Total</span><span className="text-xl font-extrabold text-[#0F172A]">{quoteProposal.total_amount.toFixed(2)} {quoteProposal.currency}</span></div>
+                            <div className="flex items-center justify-between text-sm"><span className="text-slate-500">Međuzbroj</span><span className="font-semibold text-[#0F172A]">{quoteProposal.subtotal.toFixed(2)} {quoteProposal.currency}</span></div>
+                            <div className="mt-2 flex items-center justify-between text-sm"><span className="text-slate-500">Popust</span><span className="font-semibold text-[#0F172A]">{Number(quoteProposal.discount_amount).toFixed(2)} {quoteProposal.currency}</span></div>
+                            <div className="mt-3 border-t border-[#E4ECFC] pt-3 flex items-center justify-between"><span className="text-sm font-bold text-[#0F172A]">Ukupno</span><span className="text-xl font-extrabold text-[#0F172A]">{quoteProposal.total_amount.toFixed(2)} {quoteProposal.currency}</span></div>
                           </div>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <Empty icon={Icons.folder} text="No quote proposal yet." />
+                    <Empty icon={Icons.folder} text="Nema ponude." />
                   )}
                 </div>
               </Card>
@@ -1448,15 +1448,14 @@ export default function Page() {
             <div className="grid gap-5 xl:grid-cols-2">
               <Card>
                 <CardHeader
-                  title="Draft Reply"
-                  subtitle="Edit before approving and sending"
+                  title="Nacrt odgovora"
+                  subtitle="Uredi prije odobrenja i slanja"
                   right={
                     <>
-                      {/* NEW: Templates button */}
                       <Btn variant="ghost" size="xs" onClick={() => setTemplatesPickerOpen(o => !o)} icon={Icons.template}>
-                        {templatesPickerOpen ? "Close templates" : `Templates (${templates.length})`}
+                        {templatesPickerOpen ? "Zatvori predloške" : `Predlošci (${templates.length})`}
                       </Btn>
-                      <Btn variant="ghost" size="xs" onClick={saveEditedDraft} disabled={actionLoading !== null || !editedDraft.trim()}>Save draft</Btn>
+                      <Btn variant="ghost" size="xs" onClick={saveEditedDraft} disabled={actionLoading !== null || !editedDraft.trim()}>Spremi nacrt</Btn>
                     </>
                   }
                 />
@@ -1464,21 +1463,21 @@ export default function Page() {
                   {/* NEW: Template picker panel */}
                   {templatesPickerOpen && (
                     <div className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4">
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Saved templates</p>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Spremljeni predlošci</p>
                       {templatesLoading ? (
-                        <div className="text-xs text-slate-400 flex items-center gap-2">{Icons.spin} Loading…</div>
+                        <div className="text-xs text-slate-400 flex items-center gap-2">{Icons.spin} Učitavanje…</div>
                       ) : templates.length === 0 ? (
-                        <p className="text-xs text-slate-400">No templates yet. Create one below.</p>
+                        <p className="text-xs text-slate-400">Nema predložaka. Kreiraj jedan ispod.</p>
                       ) : (
                         <div className="space-y-1.5">
                           {templates.map(t => (
                             <div key={t.id} className="flex items-center justify-between gap-2 rounded-lg border border-[#E4ECFC] bg-white px-3 py-2">
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-xs font-bold text-[#0F172A]">{t.name}</p>
-                                <p className="truncate text-[10px] text-slate-400">Used {t.use_count}× · {t.body_text.slice(0, 60)}{t.body_text.length > 60 ? "…" : ""}</p>
+                                <p className="truncate text-[10px] text-slate-400">Korišten {t.use_count}× · {t.body_text.slice(0, 60)}{t.body_text.length > 60 ? "…" : ""}</p>
                               </div>
                               <div className="flex shrink-0 gap-1">
-                                <Btn variant="primary" size="xs" onClick={() => applyTemplate(t.id)} disabled={!selectedMessage}>Apply</Btn>
+                                <Btn variant="primary" size="xs" onClick={() => applyTemplate(t.id)} disabled={!selectedMessage}>Primijeni</Btn>
                                 <Btn variant="danger" size="xs" onClick={() => deleteTemplate(t.id)} icon={Icons.trash}></Btn>
                               </div>
                             </div>
@@ -1488,41 +1487,41 @@ export default function Page() {
 
                       {/* Create new template */}
                       <div className="mt-4 space-y-2 border-t border-[#E4ECFC] pt-4">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Create new template</p>
-                        <Input value={newTemplateName} onChange={e => setNewTemplateName(e.target.value)} placeholder="Template name (e.g. Site visit follow-up)" />
-                        <Textarea value={newTemplateBody} onChange={e => setNewTemplateBody(e.target.value)} placeholder="Template body text…" rows={4} />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Kreiraj novi predložak</p>
+                        <Input value={newTemplateName} onChange={e => setNewTemplateName(e.target.value)} placeholder="Naziv predloška (npr. Praćenje terenske posjete)" />
+                        <Textarea value={newTemplateBody} onChange={e => setNewTemplateBody(e.target.value)} placeholder="Tekst predloška…" rows={4} />
                         <div className="flex justify-end">
                           <Btn variant="primary" size="xs" onClick={saveNewTemplate} disabled={!newTemplateName.trim() || !newTemplateBody.trim() || savingTemplate} icon={Icons.plus}>
-                            {savingTemplate ? "Saving…" : "Save template"}
+                            {savingTemplate ? "Spremanje…" : "Spremi predložak"}
                           </Btn>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  <Textarea value={editedDraft} onChange={e => setEditedDraft(e.target.value)} placeholder="AI-generated draft will appear here after processing…" rows={12} />
-                  <p className="text-xs text-slate-400">Review, save, approve, and send.</p>
+                  <Textarea value={editedDraft} onChange={e => setEditedDraft(e.target.value)} placeholder="AI nacrt će se pojaviti ovdje nakon obrade…" rows={12} />
+                  <p className="text-xs text-slate-400">Pregledaj, spremi, odobri i pošalji.</p>
                 </div>
               </Card>
               <Card>
-                <CardHeader title="Documents" subtitle="Files attached to this inquiry" />
-                <div className="p-5">{documents.length > 0 ? (<div className="space-y-2">{documents.map(doc => <div key={doc.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3.5 py-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-[#0F172A]">{doc.filename}</p><p className="mt-0.5 text-xs text-slate-400">{doc.file_type || "Unknown"} · {formatDate(doc.created_at)}</p></div><span className="shrink-0 rounded border border-[#E4ECFC] bg-white px-2 py-0.5 text-xs font-medium text-slate-500">Attachment</span></div>)}</div>) : <Empty icon={Icons.folder} text="No documents attached yet." />}</div>
+                <CardHeader title="Dokumenti" subtitle="Datoteke priložene ovom upitu" />
+                <div className="p-5">{documents.length > 0 ? (<div className="space-y-2">{documents.map(doc => <div key={doc.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#E4ECFC] bg-[#F1F5FD] px-3.5 py-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-[#0F172A]">{doc.filename}</p><p className="mt-0.5 text-xs text-slate-400">{doc.file_type || "Nepoznato"} · {formatDate(doc.created_at)}</p></div><span className="shrink-0 rounded border border-[#E4ECFC] bg-white px-2 py-0.5 text-xs font-medium text-slate-500">Privitak</span></div>)}</div>) : <Empty icon={Icons.folder} text="Nema priloženih dokumenata." />}</div>
               </Card>
             </div>
 
             {/* Notes + Audit log */}
             <div className="grid gap-5 xl:grid-cols-2">
               <Card>
-                <CardHeader title="Internal Notes" subtitle="Private notes for your team" />
+                <CardHeader title="Interne bilješke" subtitle="Privatne bilješke za vaš tim" />
                 <div className="space-y-4 p-5">
-                  <Textarea value={newNote} onChange={e => setNewNote(e.target.value)} placeholder="Add a private note…" rows={4} />
-                  <div className="flex justify-end"><Btn variant="primary" size="sm" onClick={addInternalNote} disabled={!selectedMessage || !newNote.trim() || actionLoading === "note"} icon={Icons.note}>{actionLoading === "note" ? "Saving…" : "Add note"}</Btn></div>
-                  {notes.length > 0 ? (<div className="space-y-2">{notes.map(n => <div key={n.id} className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4"><div className="mb-2 flex items-center justify-between gap-2"><p className="text-xs font-bold text-[#0F172A]">{n.author}</p><p className="text-[11px] text-slate-400 flex items-center gap-1">{Icons.clock}{formatDate(n.created_at)}</p></div><p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{n.note_text}</p></div>)}</div>) : <Empty icon={Icons.note} text="No internal notes yet." />}
+                  <Textarea value={newNote} onChange={e => setNewNote(e.target.value)} placeholder="Dodaj privatnu bilješku…" rows={4} />
+                  <div className="flex justify-end"><Btn variant="primary" size="sm" onClick={addInternalNote} disabled={!selectedMessage || !newNote.trim() || actionLoading === "note"} icon={Icons.note}>{actionLoading === "note" ? "Spremanje…" : "Dodaj bilješku"}</Btn></div>
+                  {notes.length > 0 ? (<div className="space-y-2">{notes.map(n => <div key={n.id} className="rounded-xl border border-[#E4ECFC] bg-[#F1F5FD] p-4"><div className="mb-2 flex items-center justify-between gap-2"><p className="text-xs font-bold text-[#0F172A]">{n.author}</p><p className="text-[11px] text-slate-400 flex items-center gap-1">{Icons.clock}{formatDate(n.created_at)}</p></div><p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{n.note_text}</p></div>)}</div>) : <Empty icon={Icons.note} text="Nema internih bilješki." />}
                 </div>
               </Card>
 
               <Card>
-                <CardHeader title="Audit Log" subtitle="Timeline of actions on this inquiry" />
+                <CardHeader title="Revizijski zapis" subtitle="Kronologija radnji na ovom upitu" />
                 <div className="p-5">{auditLogs.length > 0 ? (
                   <div className="relative pl-5">
                     <div className="absolute bottom-2 left-[7px] top-2 w-px bg-[#E4ECFC]" />
@@ -1540,7 +1539,7 @@ export default function Page() {
                       </div>
                     ))}
                   </div>
-                ) : <Empty icon={Icons.clock} text="No audit log entries yet." />}</div>
+                ) : <Empty icon={Icons.clock} text="Nema zapisa revizije." />}</div>
               </Card>
             </div>
 
@@ -1553,15 +1552,15 @@ export default function Page() {
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2" style={fontStyle}>
           <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#E4ECFC] bg-[#0F172A] px-4 py-3 shadow-2xl">
             <span className="text-xs font-bold text-white">
-              {selectedBulkIds.size} selected
+              {selectedBulkIds.size} odabrano
             </span>
             <div className="h-4 w-px bg-white/20" />
-            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("archive")} disabled={bulkActionLoading} icon={Icons.archive}>Archive</Btn>
-            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("ignore")} disabled={bulkActionLoading} icon={Icons.ban}>Ignore</Btn>
-            <Btn variant="primary" size="xs" onClick={() => executeBulkAction("process")} disabled={bulkActionLoading} icon={Icons.cursor}>Process</Btn>
-            <Btn variant="danger" size="xs" onClick={() => executeBulkAction("reject")} disabled={bulkActionLoading} icon={Icons.x}>Reject</Btn>
+            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("archive")} disabled={bulkActionLoading} icon={Icons.archive}>Arhiviraj</Btn>
+            <Btn variant="ghost" size="xs" onClick={() => executeBulkAction("ignore")} disabled={bulkActionLoading} icon={Icons.ban}>Ignoriraj</Btn>
+            <Btn variant="primary" size="xs" onClick={() => executeBulkAction("process")} disabled={bulkActionLoading} icon={Icons.cursor}>Obradi</Btn>
+            <Btn variant="danger" size="xs" onClick={() => executeBulkAction("reject")} disabled={bulkActionLoading} icon={Icons.x}>Odbij</Btn>
             <div className="h-4 w-px bg-white/20" />
-            <Btn variant="ghost" size="xs" onClick={clearBulkSelection} disabled={bulkActionLoading}>Clear</Btn>
+            <Btn variant="ghost" size="xs" onClick={clearBulkSelection} disabled={bulkActionLoading}>Poništi odabir</Btn>
           </div>
         </div>
       )}
