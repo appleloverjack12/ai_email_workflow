@@ -619,7 +619,7 @@ export default function Page() {
     const headers = new Headers(init.headers || {});
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const r = await fetch(input, { ...init, headers });
-    if (r.status === 401) { localStorage.removeItem("auth_token"); localStorage.removeItem("auth_user"); setToken(null); setAuthUser(null); }
+    if (r.status === 401) { const body = await r.clone().json().catch(() => ({})); const detail: string = body?.detail ?? ""; if (!detail.toLowerCase().includes("gmail")) { localStorage.removeItem("auth_token"); localStorage.removeItem("auth_user"); setToken(null); setAuthUser(null); } }
     return r;
   }
 
