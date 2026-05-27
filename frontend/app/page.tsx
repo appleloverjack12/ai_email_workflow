@@ -367,6 +367,7 @@ export default function Page() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [ignoreSendersText, setIgnoreSendersText] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
 
   // NEW state — templates
   const [templates, setTemplates] = useState<ReplyTemplate[]>([]);
@@ -609,7 +610,7 @@ export default function Page() {
 
   // ── Effects & auth setup ──────────────────────────────────────────────────
   useEffect(() => { if (filteredMessages.length === 0) { setSelectedId(null); setSelectedMessage(null); return; } if (!filteredMessages.some(m => m.id === selectedId)) { setSelectedId(filteredMessages[0].id); setSelectedMessage(filteredMessages[0]); } }, [filteredMessages, selectedId]);
-  useEffect(() => { if (token && authUser) { fetchMessages(); fetchSettings(); fetchTemplates(); } }, [token, authUser]);
+  useEffect(() => { if (token && authUser) { fetchMessages(); fetchSettings(); fetchTemplates(); fetchGmailStatus(); } }, [token, authUser]);
   useEffect(() => { if (selectedId !== null && messages.some(m => m.id === selectedId)) fetchMessageDetail(selectedId); }, [selectedId, messages]);
   useEffect(() => { if (selectedId !== null && !messages.some(m => m.id === selectedId)) { setSelectedId(null); setSelectedMessage(null); setProcessedData(null); setEditedDraft(""); setDocuments([]); setAuditLogs([]); setNotes([]); setNewNote(""); setElectricalQualification(null); setQuoteBrief(null); setQuoteProposal(null);} }, [messages, selectedId]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2500); return () => clearTimeout(t); }, [toast]);
@@ -626,6 +627,7 @@ export default function Page() {
   // ── API actions ───────────────────────────────────────────────────────────
   async function fetchMessages() { setLoading(true); try { const r = await authFetch(`${API_BASE}/messages`); if (!r.ok) throw new Error("Failed to load"); const data: Message[] = await r.json(); setMessages([...data].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())); if (data.length > 0 && selectedId === null) setSelectedId(data[0].id); } catch (e) { setToast({ type: "error", message: e instanceof Error ? e.message : "Error" }); } finally { setLoading(false); } }
   async function fetchSettings() {setSettingsLoading(true); try { const r = await authFetch(`${API_BASE}/settings`); const d = await r.json(); if (!r.ok) throw new Error(d.detail); setSettings(d); setIgnoreSendersText((d.ignore_senders || []).join("\n")); } catch (e) { setToast({ type: "error", message: e instanceof Error ? e.message : "Error" }); }finally { setSettingsLoading(false); } }
+  async function fetchGmailStatus() { try { const r = await authFetch(`${API_BASE}/auth/google/status`); if (r.ok) { const d = await r.json(); setGmailConnected(d.connected); } } catch { setGmailConnected(false); } }
 
   async function fetchMessageDetail(id: number) {
     if (!messages.some(m => m.id === id)) return; setDetailLoading(true);
@@ -1023,6 +1025,13 @@ export default function Page() {
             <CardHeader title="Company settings" subtitle="Business rules, reply tone, signature, and quote field requirements." right={
               <><Btn variant="ghost" size="xs" onClick={() => setSettingsOpen(false)}>Collapse</Btn><Btn variant="primary" size="xs" onClick={saveSettings} disabled={settingsSaving || settingsLoading}>{settingsSaving ? "Saving…" : "Save settings"}</Btn></>
             } />
+            <div className="flex items-center gap-3 border-b border-[#E4ECFC] px-5 py-3">
+                <span className="text-xs font-semibold text-slate-500">Gmail</span>
+                {gmailConnected === true && <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">Connected</span>}
+                {gmailConnected === false && <><span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[11px] font-semibold text-red-600">Not connected</span><a href={`${API_BASE}/auth/google/start`} target="_blank" rel="noreferrer" className="ml-2 rounded-lg bg-[#2563EB] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#1d4ed8]">Connect Gmail</a></>}
+                {gmailConnected === null && <span className="text-[11px] text-slate-400">Checking…</span>}
+                {gmailConnected === true && <button onClick={async () => { await authFetch(`${API_BASE}/auth/google/disconnect`, {method:"POST"}); setGmailConnected(false); }} className="ml-2 rounded-lg border border-red-200 px-3 py-1.5 text-[11px] font-semibold text-red-500 hover:bg-red-50">Disconnect</button>}
+              </div>
             <div className="grid gap-5 p-5 md:grid-cols-2">
               <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Company name</label><Input value={settings.company_name} onChange={e => setSettings(p => ({ ...p, company_name: e.target.value }))} placeholder="Elesys" /></div>
               <div><label className="mb-1.5 block text-xs font-semibold text-slate-500">Reply tone</label><select value={settings.preferred_reply_tone} onChange={e => setSettings(p => ({ ...p, preferred_reply_tone: e.target.value as ReplyTone }))} className="w-full cursor-pointer rounded-lg border border-[#E4ECFC] bg-white px-3 py-2.5 text-sm outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/10"><option value="professional">Professional</option><option value="friendly">Friendly</option><option value="concise">Concise</option><option value="warm">Warm</option></select></div>
