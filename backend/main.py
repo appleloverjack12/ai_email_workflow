@@ -426,6 +426,11 @@ class BootstrapAdminRequest(SQLModel):
     password: str
 
 
+class ChangePasswordRequest(SQLModel):
+    current_password: str
+    new_password: str
+
+
 class UserRead(SQLModel):
     id: int
     email: EmailStr
@@ -2844,6 +2849,21 @@ def login(request: Request, payload: LoginRequest) -> TokenResponse:
                 is_active=user.is_active,
             ),
         )
+
+
+@app.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.reviewer)),
+) -> dict:
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    with Session(engine, expire_on_commit=False) as session:
+        user = session.get(User, current_user.id)
+        user.hashed_password = hash_password(payload.new_password)
+        session.add(user)
+        session.commit()
+    return {"ok": True}
 
 
 @app.get("/settings", response_model=CompanySettingsRead)
