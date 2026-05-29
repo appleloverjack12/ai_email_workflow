@@ -71,15 +71,19 @@ app = FastAPI(title="AI Email + Document Workflow API")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Comma-separated list of allowed frontend origins. Local dev defaults are
-# included automatically; add your Vercel URL to CORS_ORIGINS in production.
-_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
-_cors_env = os.getenv("CORS_ORIGINS", _default_origins)
-_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+# If CORS_ORIGINS is not set we are in local dev — allow all localhost origins.
+_cors_env = os.getenv("CORS_ORIGINS", "")
+if _cors_env.strip():
+    _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    _allow_origin_regex = None
+else:
+    _cors_origins = []
+    _allow_origin_regex = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1788,7 +1792,6 @@ def ai_classify_message(subject: str, context: str) -> ClassificationOutput:
     client = get_openai_client()
     response = client.responses.parse(
         model=get_model_name(),
-        reasoning={"effort": "none"},
         input=[
             {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
             {"role": "user", "content": f"Classify this inbound message.\n\nSubject: {subject}\n\nContext:\n{context}"},
@@ -1858,7 +1861,6 @@ def ai_extract_fields(category: MessageCategory, context: str) -> ExtractionOutp
     client = get_openai_client()
     response = client.responses.parse(
         model=get_model_name(),
-        reasoning={"effort": "none"},
         input=[
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": (
@@ -1888,7 +1890,6 @@ def ai_draft_reply(
     client = get_openai_client()
     response = client.responses.parse(
         model=get_model_name(),
-        reasoning={"effort": "none"},
         input=[
             {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
             {"role": "user", "content": (
@@ -2005,7 +2006,6 @@ def ai_draft_missing_info(
     merged_missing = merge_unique_strings(extracted_missing, qualification_missing_fields)
     response = client.responses.parse(
         model=get_model_name(),
-        reasoning={"effort": "none"},
         input=[
             {"role": "system", "content": (
                 MISSING_INFO_DRAFT_SYSTEM_PROMPT
